@@ -1,1 +1,3 @@
-__pycache__/
+asmworkshop/asmworkshop
+asmworkshop/asmworkshop_cli
+asmworkshop/cli_dbg
