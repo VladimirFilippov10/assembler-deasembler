@@ -336,6 +336,100 @@ static GtkWidget* small_btn(const char *label, const char *css_class,
     return b;
 }
 
+static GtkWidget* about_label(const char *text, const char *size,
+                              const char *color, const char *weight,
+                              gboolean center, int mt, int mb)
+{
+    GtkWidget *l = gtk_label_new(NULL);
+    GString *s = g_string_new("<span");
+    if (size)  g_string_append_printf(s, " size='%s'", size);
+    if (color) g_string_append_printf(s, " foreground='%s'", color);
+    if (weight) g_string_append_printf(s, " weight='%s'", weight);
+    char *esc = g_markup_escape_text(text, -1);
+    g_string_append_printf(s, ">%s</span>", esc);
+    g_free(esc);
+    gtk_label_set_markup(GTK_LABEL(l), s->str);
+    g_string_free(s, TRUE);
+    if (center) gtk_widget_set_halign(l, GTK_ALIGN_CENTER);
+    gtk_label_set_xalign(GTK_LABEL(l), center ? 0.5f : 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(l), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(l), PANGO_WRAP_WORD_CHAR);
+    gtk_widget_set_margin_top(l, mt);
+    gtk_widget_set_margin_bottom(l, mb);
+    return l;
+}
+
+static GtkWidget* make_about_card(void)
+{
+    GtkWidget *outer = gtk_event_box_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(outer), "card");
+    gtk_widget_set_margin_start(outer, 10);
+    gtk_widget_set_margin_end(outer, 10);
+    gtk_widget_set_margin_top(outer, 10);
+    gtk_widget_set_margin_bottom(outer, 10);
+
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 14);
+    gtk_box_set_spacing(GTK_BOX(box), 0);
+    gtk_container_add(GTK_CONTAINER(outer), box);
+
+    /* заголовок */
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("О программе", "large", "#8e44ad", "bold", TRUE, 0, 8),
+        FALSE, FALSE, 0);
+
+    /* назначение */
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("Назначение:", "small", "#4a90d9", "bold", FALSE, 5, 3),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("Ассемблирование и деассемблирование x86-команд "
+                    "(NASM + objdump) с разбором машинного кода по полям: "
+                    "префиксы, opcode, модификаторы адресации, immediate.",
+                    "x-small", "#555555", NULL, FALSE, 0, 8),
+        FALSE, FALSE, 0);
+
+    /* как работать */
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("Как работать:", "small", "#4a90d9", "bold", FALSE, 5, 3),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("1️ Выберите режим: COM 16-bit (DOSBox) / 16 / 32 / 64",
+                    "x-small", "#555555", NULL, FALSE, 0, 3),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("2️ Введите ассемблерный код слева и нажмите «Собрать →»",
+                    "x-small", "#555555", NULL, FALSE, 0, 3),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("3️ Или введите HEX-байты справа и нажмите «← Разобрать»",
+                    "x-small", "#555555", NULL, FALSE, 0, 3),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("4️ Таблица «Разбор команды по полям» покажет строение машинного кода",
+                    "x-small", "#555555", NULL, FALSE, 0, 8),
+        FALSE, FALSE, 0);
+
+    /* разделитель */
+    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top(sep, 5);
+    gtk_widget_set_margin_bottom(sep, 8);
+    gtk_box_pack_start(GTK_BOX(box), sep, FALSE, FALSE, 0);
+
+    /* разработчик */
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("Разработчик", "small", "#4a90d9", "bold", TRUE, 0, 5),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("Филиппов Владимир Евгеньевич", "x-small", "#333333", NULL, TRUE, 0, 0),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+        about_label("25ПИнж(б)-1", "xx-small", "#888888", NULL, TRUE, 0, 0),
+        FALSE, FALSE, 0);
+
+    return outer;
+}
+
 int main(int argc, char **argv)
 {
     gtk_init(&argc, &argv);
@@ -448,6 +542,10 @@ int main(int argc, char **argv)
     /* таблица разбора команды по полям */
     GtkWidget *rbd = make_breakdown_tree("РАЗБОР КОМАНДЫ ПО ПОЛЯМ", &rbd_store);
     gtk_box_pack_start(GTK_BOX(rcontent), rbd, TRUE, TRUE, 0);
+
+ GtkWidget *about_card = make_about_card();
+    gtk_widget_set_size_request(about_card, 260, -1);
+    gtk_box_pack_start(GTK_BOX(cols), about_card, FALSE, FALSE, 0);
 
     /* ── нижняя строка состояния ── */
     statusbar = gtk_label_new(NULL);
