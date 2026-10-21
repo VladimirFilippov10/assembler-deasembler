@@ -119,11 +119,12 @@ static void bytes_to_hex(const unsigned char *d, size_t n, char *out, size_t cap
 }
 
 /* Запустить nasm на файле src_path, получить байты. */
-static int nasm_to_bytes(const char *src_path, Mode mode,
+static int nasm_to_bytes(const char *src_path, Mode mode __attribute__((unused)),
                          unsigned char *bytes, size_t *len, size_t bytecap,
                          char *err, size_t errcap)
 {
     char cmd[1024];
+    (void)mode; /* режим уже учтён в подготовленном исходнике (BITS/ORG) */
     snprintf(cmd, sizeof cmd, "nasm -f bin -O0 -o %s/out.bin %s 2>%s/nasm.err",
              TMPDIR, src_path, TMPDIR);
     int rc = 0;
