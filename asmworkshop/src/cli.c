@@ -36,6 +36,7 @@ static int looks_like_instruction(const char *s)
         while (*s == ' ' || *s == '\t') s++;
     }
     if (!*s) return 0;
+    /* директивы NASM тоже валидны (db, mov, int, section...) */
     /* первый токен должен быть мнемоникой из букв */
     if (!((s[0] >= 'a' && s[0] <= 'z') || (s[0] >= 'A' && s[0] <= 'Z'))) return 0;
     for (const char *p = s; ; p++) {
@@ -60,6 +61,20 @@ static void clean_err(char *msg, size_t cap)
              "\nПодсказка: вводите инструкцию, например 'mov ax, 1'. 'help' — список команд.");
 }
 
+/* Печатать ли таблицу разбора после каждого результата (команда 'table'). */
+static int show_table = 1;
+
+static void print_breakdown(const char *src, Mode m, int is_hex)
+{
+    if (!show_table) return;
+    char table[8192], tmsg[512];
+    if (engine_breakdown(src, m, is_hex, table, sizeof table,
+                         tmsg, sizeof tmsg) == 0) {
+        printf("\nТАБЛИЦА РАЗБОРА (разбиение команды по полям):\n%s", table);
+        printf("ИТОГ: %s\n", tmsg);
+    }
+}
+
 static int run_asm(const char *src, Mode m)
 {
     if (!looks_like_instruction(src)) {
@@ -73,6 +88,7 @@ static int run_asm(const char *src, Mode m)
     if (rc == 0) {
         printf("\nHEX : %s\n", hex);
         printf("ИНФО: %s\n", msg);
+        print_breakdown(src, m, 0);
     } else {
         clean_err(msg, sizeof msg);
         printf("\nОШИБКА: %s\n", msg);
@@ -96,6 +112,7 @@ static int run_dis(const char *hx, Mode m)
     if (rc == 0) {
         printf("\nASM :\n%s\n", asm_);
         printf("ИНФО: %s\n", msg);
+        print_breakdown(hx, m, 1);
     } else {
         clean_err(msg, sizeof msg);
         printf("\nОШИБКА: %s\n", msg);
@@ -111,6 +128,7 @@ static void print_help(void)
     printf("  !hex          направление asm -> hex (вводите инструкции)\n");
     printf("  !asm          направление hex -> asm (вводите байты, напр. B8 01 00)\n");
     printf("  !com/!16/!32/!64  смена режима\n");
+    printf("  table on/off  таблица разбора по полям после каждого результата (вкл. по умолчанию)\n");
     printf("  clear         очистить экран\n");
     printf("Примеры:\n");
     printf("  asm→hex> mov ax, 1   ->  HEX : B8 01 00\n");
@@ -154,6 +172,9 @@ int main(int argc, char **argv)
         if (!strcmp(line, "q") || !strcmp(line, "quit")) break;
         if (!strcmp(line, "help")) { print_help(); continue; }
         if (!strcmp(line, "clear")) { printf("\033[2J\033[H"); continue; }
+        if (!strcmp(line, "table on"))  { show_table = 1; printf("Таблица разбора: вкл\n"); continue; }
+        if (!strcmp(line, "table off")) { show_table = 0; printf("Таблица разбора: выкл\n"); continue; }
+        if (!strcmp(line, "table")) { printf(show_table ? "Таблица разбора: вкл\n" : "Таблица разбора: выкл\n"); continue; }
         if (!strcmp(line, "!hex")) { dir = 0; continue; }
         if (!strcmp(line, "!asm")) { dir = 1; continue; }
         if (!strcmp(line, "!16")) { mode = MODE_16; continue; }

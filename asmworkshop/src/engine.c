@@ -18,6 +18,11 @@ static int nasm_to_bytes(const char *src_path, Mode mode __attribute__((unused))
                          unsigned char *bytes, size_t *len, size_t bytecap,
                          char *err, size_t errcap);
 
+/* точный разбор байт-потока с размерами инструкций (определено ниже) */
+static int disasm_with_sizes(const unsigned char *bytes, size_t len, Mode mode,
+                             char (*insns)[256], int *sizes, int maxn, int *count,
+                             char *err, size_t errcap);
+
 static const char *mode_bits[]  = { "16", "16", "32", "64" };
 static const char *mode_arch[]  = { "i8086", "i8086", "i386", "i386:x86-64" };
 static const char *mode_name[]  = { "COM 16-bit (DOSBox)", "16-bit", "32-bit", "64-bit" };
@@ -397,10 +402,15 @@ static int parse_hex(const char *hexstr, unsigned char *bytes, size_t cap, size_
     while (*p) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
+        /* префикс 0x / $ / h-суффикс нотация */
+        if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) { p += 2; continue; }
+        if (*p == '$') { p++; continue; }
         if (isxdigit((unsigned char)*p)) {
             char pair[3] = {0,0,0};
             int cnt = 0;
             while (*p && isxdigit((unsigned char)*p) && cnt < 2) pair[cnt++] = *p++;
+            /* суффикс 'h'/'H' (напр. "B8h") — пропустить */
+            if ((*p == 'h' || *p == 'H') && cnt == 2) p++;
             if (cnt == 1) { /* одиночная цифра — сдвинуть */
                 pair[1] = pair[0]; pair[0] = '0';
             }
@@ -408,7 +418,8 @@ static int parse_hex(const char *hexstr, unsigned char *bytes, size_t cap, size_
             if (hex_pair(pair, &v) == 0 && n < cap) bytes[n++] = v;
             continue;
         }
-        if (*p == ',' || *p == ';' || *p == '#' || *p == 'x' || *p == 'X') { p++; continue; }
+        if (*p == ',' || *p == ';') { p++; continue; }
+        if (*p == 'h' || *p == 'H') { p++; continue; } /* хвостовая h без цифры */
         p++; /* пропустить неизвестное */
     }
     *len = n;
@@ -465,6 +476,49 @@ int parse_objdump_line(const char *ln, char *insn, size_t cap,
     return 0;
 }
 
+/* ─────────────── автодетект режима деассемблирования ─────────────── */
+
+/* Подсчёт "осмысленных" инструкций objdump-вывода для данного hex в режиме mode.
+ * Возвращает число разобранных инструкций; bad — счёт .byte/(bad)/junk. */
+static int disasm_quality(const unsigned char *bytes, size_t len, Mode mode, int *bad)
+{
+    static char insns[64][256];
+    static int sizes[64];
+    int count = 0;
+    char err[256];
+    *bad = 0;
+    if (disasm_with_sizes(bytes, len, mode, insns, sizes, 64, &count, err, sizeof err) != 0)
+        return -1;
+    for (int i = 0; i < count; i++)
+        if (strstr(insns[i], ".byte") || strstr(insns[i], "(bad)") ||
+            strstr(insns[i], ".short")) (*bad)++;
+    return count;
+}
+
+/* Если пользователь просит режим com/16, а objdump разбирает код как мусор
+ * (типично для macOS binutils, где i8086 не поддерживает 16-битные регистры),
+ * подбираем первый режим с минимальным количеством "плохих" строк. */
+static Mode auto_dis_mode(const unsigned char *bytes, size_t len, Mode asked)
+{
+    if (asked != MODE_COM && asked != MODE_16) return asked;
+    int bad_asked = 999;
+    int n = disasm_quality(bytes, len, asked, &bad_asked);
+    if (n > 0 && bad_asked == 0) return asked; /* родной режим справляется */
+    const Mode order[] = { MODE_32, MODE_64, MODE_16, MODE_COM };
+    Mode best = asked;
+    int best_bad = bad_asked, best_n = n;
+    for (unsigned k = 0; k < sizeof order / sizeof order[0]; k++) {
+        int bad = 0;
+        int cnt = disasm_quality(bytes, len, order[k], &bad);
+        if (cnt <= 0) continue;
+        if (bad < best_bad || (bad == best_bad && cnt > best_n)) {
+            best_bad = bad; best_n = cnt; best = order[k];
+        }
+        if (bad == 0) break;
+    }
+    return best;
+}
+
 int engine_disassemble(const char *hexstr, Mode mode,
                        char *out_asm, size_t asmcap,
                        char *out_msg, size_t msgcap)
@@ -479,6 +533,7 @@ int engine_disassemble(const char *hexstr, Mode mode,
         snprintf(out_msg, msgcap, "Не нашёл ни одного байта в hex-строке");
         return -1;
     }
+    Mode used = auto_dis_mode(bytes, len, mode);
     char path[64];
     snprintf(path, sizeof path, TMPDIR "/dis_%d.bin", (int)getpid());
     FILE *f = fopen(path, "wb");
@@ -488,7 +543,7 @@ int engine_disassemble(const char *hexstr, Mode mode,
     char cmd[512];
     snprintf(cmd, sizeof cmd,
              "objdump -D -b binary -m %s -M intel --insn-width=16 %s 2>/dev/null",
-             mode_arch[mode], path);
+             mode_arch[used], path);
     char buf[65536];
     int rc = 0;
     run_capture(cmd, buf, sizeof buf, &rc);
@@ -537,9 +592,13 @@ int engine_disassemble(const char *hexstr, Mode mode,
     }
     char expl[256];
     explain_line(prev_insn, expl, sizeof expl);
-    snprintf(out_msg, msgcap, "%d инструкци%s · режим %s%s%s",
+    snprintf(out_msg, msgcap, "%d инструкци%s · режим %s%s%s%s",
              count, (count == 1 ? "я" : (count < 5 ? "и" : "й")),
-             mode_name[mode], expl[0] ? "\n" : "", expl);
+             mode_name[used], expl[0] ? "\n" : "", expl,
+             used != mode ?
+             "\nПримечание: objdump не дал чистого разбора в запрошенном 16-битном\n"
+             "режиме (частая проблема binutils на macOS — i386 objdump печатает\n"
+             "AT&T-синтаксис). Выбран режим с наилучшим результатом." : "");
     return 0;
 }
 
@@ -778,6 +837,56 @@ static int disasm_with_sizes(const unsigned char *bytes, size_t len, Mode mode,
     return 0;
 }
 
+/* ─────────────── разбор текста таблицы на поля (общий для GUI/CLI) ─────────────── */
+
+#include "bdtable.h"
+
+static char bd_pool[8192];
+
+int bd_parse(const char *table, BdTable *t)
+{
+    memset(t, 0, sizeof *t);
+    size_t pp = 0;
+    const char *p = table;
+    while (*p && t->nrows < 64) {
+        const char *e = strchr(p, '\n');
+        size_t ll = e ? (size_t)(e - p) : strlen(p);
+        /* строка данных: содержит >=5 разделителей '|' */
+        int bars = 0;
+        for (size_t i = 0; i < ll; i++) if (p[i] == '|') bars++;
+        if (bars >= 5 && ll + 1 < sizeof bd_pool - pp) {
+            char *base = bd_pool + pp;
+            memcpy(base, p, ll); base[ll] = 0;
+            pp += ll + 1;
+            /* разрезать по '|' */
+            char *cols[6] = {0};
+            int nc = 0;
+            char *q = base;
+            while (nc < 5) {
+                char *bar = strchr(q, '|');
+                if (!bar) break;
+                *bar = 0;
+                cols[nc++] = q;
+                q = bar + 1;
+            }
+            if (nc == 5) {
+                cols[nc++] = q;
+                for (int c = 0; c < 6; c++) {
+                    char *v = cols[c];
+                    while (*v == ' ' || *v == '\t') v++;
+                    size_t L = strlen(v);
+                    while (L && (v[L-1] == ' ' || v[L-1] == '\t')) v[--L] = 0;
+                    t->row[t->nrows][c] = v;
+                }
+                t->nrows++;
+            }
+        }
+        if (!e) break;
+        p = e + 1;
+    }
+    return t->nrows;
+}
+
 int engine_breakdown(const char *src, Mode mode, int is_hex,
                      char *out, size_t cap,
                      char *msg, size_t msgcap)
@@ -808,7 +917,11 @@ int engine_breakdown(const char *src, Mode mode, int is_hex,
     static int sizes[64];
     int count = 0;
     char err[512];
-    if (disasm_with_sizes(bytes, blen, mode, insns, sizes, 64, &count, err, sizeof err) != 0) {
+    /* для hex-ввода применяем тот же автодетект режима, что и деассемблирование,
+     * чтобы таблица соответствовала выводу ASM */
+    Mode used = mode;
+    if (is_hex) used = auto_dis_mode(bytes, blen, mode);
+    if (disasm_with_sizes(bytes, blen, used, insns, sizes, 64, &count, err, sizeof err) != 0) {
         snprintf(msg, msgcap, "%s", err);
         return -1;
     }
@@ -822,7 +935,7 @@ int engine_breakdown(const char *src, Mode mode, int is_hex,
         "----+---------+----------+------------------------+------------+-----\n");
     for (int i = 0; i < count && pos < cap - 300; i++) {
         InsnFields f;
-        insn_split(insns[i], mode, &f);
+        insn_split(insns[i], used, &f);
         f.size = sizes[i];
         pos += (size_t)snprintf(out + pos, cap - pos,
             "%-3d | %-7s | %-8s | %-22s | %-10s | %-4d\n",
@@ -833,7 +946,7 @@ int engine_breakdown(const char *src, Mode mode, int is_hex,
 
     snprintf(msg, msgcap, "%d инструкци%s · режим %s · всего %zu байт",
              count, (count == 1 ? "я" : (count < 5 ? "и" : "й")),
-             mode_name[mode], blen);
+             mode_name[used], blen);
     return 0;
 }
 
