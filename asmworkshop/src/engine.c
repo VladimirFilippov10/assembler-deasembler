@@ -418,8 +418,8 @@ static int parse_hex(const char *hexstr, unsigned char *bytes, size_t cap, size_
 /* Разобрать строку objdump вида:
  *   "  401115:  48 01 c3        add    rbx,rax"
  * -> "add rbx, rax" + стартовые байты. */
-static int parse_objdump_line(const char *ln, char *insn, size_t cap,
-                              unsigned char *opb, size_t *oplen, size_t opcap)
+int parse_objdump_line(const char *ln, char *insn, size_t cap,
+                       unsigned char *opb, size_t *oplen, size_t opcap)
 {
     const char *colon = strchr(ln, ':');
     if (!colon) return -1;
@@ -528,7 +528,7 @@ int engine_disassemble(const char *hexstr, Mode mode,
             count++;
             apos += (size_t)snprintf(out_asm + apos, asmcap - apos, "%s%s",
                                      count > 1 ? "\n" : "", insn);
-            strncpy(prev_insn, insn, sizeof prev_insn - 1);
+            g_strlcpy_compat(prev_insn, insn, sizeof prev_insn);
         }
     }
     if (count == 0) {
@@ -614,6 +614,228 @@ static const struct Exp EXPS[] = {
     {"cmov",  "Условный пересылка"},
     {NULL, NULL}
 };
+
+/* ─────────────────────────── разбор на поля (для таблицы) ─────────────────────────── */
+
+static const char *mode_bits_num[] = { "16", "16", "32", "64" };
+
+/* Найти immediate-операнд: последний операнд, начинающийся с цифры/0x/$ или 'c' (char). */
+static void extract_imm(const char *ops, char *out, size_t cap)
+{
+    out[0] = 0;
+    /* идём по запятым вне скобок, запоминаем последний операнд */
+    const char *last = ops;
+    int depth = 0;
+    const char *p = ops;
+    for (;; p++) {
+        if (*p == '(' || *p == '[') depth++;
+        else if (*p == ')' || *p == ']') depth--;
+        else if ((*p == ',' && depth == 0) || *p == 0) {
+            const char *s = last;
+            while (s < p && isspace((unsigned char)*s)) s++;
+            if (s < p) {
+                size_t l = (size_t)(p - s);
+                /* пропускаем ведущие пробелы токена */
+                char c0 = ' ';
+                { const char *t = s; while (t < p && isspace((unsigned char)*t)) t++; if (t < p) c0 = *t; }
+                int isimm = isdigit((unsigned char)c0) || c0 == '$' || c0 == '\'';
+                if (!isimm && l >= 2 && c0 == '0' && (s[1] == 'x' || s[1] == 'X')) isimm = 1;
+                if (isimm && l < cap) { memcpy(out, s, l); out[l] = 0; trim(out); }
+            }
+            if (!*p) break;
+            last = p + 1;
+        }
+    }
+}
+
+void insn_split(const char *line, Mode mode, InsnFields *f)
+{
+    memset(f, 0, sizeof *f);
+    f->prefix = -1;
+    f->size = -1;
+    f->bits = atoi(mode_bits_num[mode]);
+
+    char b[512];
+    strncpy(b, line, sizeof b - 1); b[sizeof b - 1] = 0;
+    /* отсечь комментарий */
+    for (char *p = b; *p; p++)
+        if (*p == ';' || (p == b && *p == '#')) { *p = 0; break; }
+    trim(b);
+    if (!b[0]) return;
+
+    /* первая мнемоника */
+    char *sp = b;
+    while (*sp && !isspace((unsigned char)*sp)) sp++;
+    size_t opl = (size_t)(sp - b);
+    if (opl >= sizeof f->opcode) opl = sizeof f->opcode - 1;
+    memcpy(f->opcode, b, opl); f->opcode[opl] = 0;
+    for (size_t i = 0; f->opcode[i]; i++)
+        f->opcode[i] = (char)tolower((unsigned char)f->opcode[i]);
+    while (*sp && isspace((unsigned char)*sp)) sp++;
+
+    /* префиксы rep/lock + строковая команда: "rep stosb" -> opcode "stosb", prefix rep */
+    static const struct { const char *w; int id; } PFX[] = {
+        {"rep", 0}, {"repe", 1}, {"repz", 1}, {"repne", 2}, {"repnz", 2}, {"lock", 3}, {NULL, -1}
+    };
+    for (int i = 0; PFX[i].w; i++) {
+        if (strcmp(f->opcode, PFX[i].w) == 0 && *sp) {
+            f->prefix = PFX[i].id;
+            char rest[512];
+            strncpy(rest, sp, sizeof rest - 1); rest[sizeof rest - 1] = 0;
+            char *q = rest;
+            while (*q && !isspace((unsigned char)*q)) q++;
+            size_t l = (size_t)(q - rest);
+            if (l >= sizeof f->opcode) l = sizeof f->opcode - 1;
+            memcpy(f->opcode, rest, l); f->opcode[l] = 0;
+            while (*q && isspace((unsigned char)*q)) q++;
+            /* operands = всё после второй мнемоники */
+            g_strlcpy_compat(f->operands, q, sizeof f->operands);
+            goto have_ops;
+        }
+    }
+    g_strlcpy_compat(f->operands, sp, sizeof f->operands);
+
+have_ops:
+    /* нормализация пробелов в операндах */
+    {
+        char clean[192];
+        size_t o = 0; int lastsp = 0;
+        for (const char *p = f->operands; *p; p++) {
+            if (isspace((unsigned char)*p)) { if (!lastsp && o) clean[o++] = ' '; lastsp = 1; }
+            else { clean[o++] = *p; lastsp = 0; }
+            if (o + 1 >= sizeof clean) break;
+        }
+        clean[o] = 0;
+        /* убрать пробел перед запятой и добавить после */
+        snprintf(f->operands, sizeof f->operands, "%s", clean);
+        trim(f->operands);
+    }
+    extract_imm(f->operands, f->imm, sizeof f->imm);
+}
+
+/* ─────────────────────────── таблица разбора команды ─────────────────────────── */
+
+static const char *prefix_name(int p)
+{
+    switch (p) {
+        case 0: return "rep";
+        case 1: return "repe";
+        case 2: return "repne";
+        case 3: return "lock";
+        default: return "-";
+    }
+}
+
+/* Точный разбор байт-потока через objdump: список инструкций + размер каждой. */
+static int disasm_with_sizes(const unsigned char *bytes, size_t len, Mode mode,
+                             char (*insns)[256], int *sizes, int maxn, int *count,
+                             char *err, size_t errcap)
+{
+    char path[64];
+    snprintf(path, sizeof path, TMPDIR "/bd_%d.bin", (int)getpid());
+    FILE *f = fopen(path, "wb");
+    if (!f) { snprintf(err, errcap, "нет доступа к %s", TMPDIR); return -1; }
+    fwrite(bytes, 1, len, f);
+    fclose(f);
+
+    char cmd[512];
+    snprintf(cmd, sizeof cmd,
+             "objdump -D -b binary -m %s -M intel --insn-width=16 %s 2>/dev/null",
+             mode_arch[mode], path);
+    static char buf[65536];
+    int rc = 0;
+    run_capture(cmd, buf, sizeof buf, &rc);
+    unlink(path);
+    if (rc != 0) { snprintf(err, errcap, "objdump не найден или ошибка (код %d)", rc); return -1; }
+
+    char *p = strstr(buf, "Disassembly of section");
+    if (!p) { snprintf(err, errcap, "objdump: нет секции кода"); return -1; }
+    p = strchr(p, '\n');
+    if (!p) { snprintf(err, errcap, "формат objdump?"); return -1; }
+    p++;
+
+    int n = 0;
+    char line[512];
+    while (*p && n < maxn) {
+        char *e = strchr(p, '\n');
+        size_t ll = e ? (size_t)(e - p) : strlen(p);
+        if (ll >= sizeof line) ll = sizeof line - 1;
+        memcpy(line, p, ll); line[ll] = 0;
+        p += ll + (e ? 1 : 0);
+        if (!e && ll == 0) break;
+        if (strncmp(line, "Disassembly", 11) == 0) continue;
+        if (strstr(line, "file format")) break;
+        unsigned char opb[16]; size_t opl = 0;
+        char insn[256];
+        if (parse_objdump_line(line, insn, sizeof insn, opb, &opl, sizeof opb) == 0) {
+            g_strlcpy_compat(insns[n], insn, 256);
+            sizes[n] = (int)opl;
+            n++;
+        }
+    }
+    *count = n;
+    if (n == 0) { snprintf(err, errcap, "Не удалось разобрать байты (objdump вернул пусто)"); return -1; }
+    return 0;
+}
+
+int engine_breakdown(const char *src, Mode mode, int is_hex,
+                     char *out, size_t cap,
+                     char *msg, size_t msgcap)
+{
+    if (ensure_tmpdir() != 0) {
+        snprintf(msg, msgcap, "Нет каталог %s", TMPDIR);
+        return -1;
+    }
+    unsigned char bytes[4096];
+    size_t blen = 0;
+    char hexbuf[2048] = "";
+
+    if (is_hex) {
+        if (parse_hex(src, bytes, sizeof bytes, &blen) != 0) {
+            snprintf(msg, msgcap, "Не нашёл ни одного байта в hex-строке");
+            return -1;
+        }
+    } else {
+        char em[512];
+        if (engine_assemble(src, mode, hexbuf, sizeof hexbuf, em, sizeof em) != 0) {
+            snprintf(msg, msgcap, "%s", em);
+            return -1;
+        }
+        parse_hex(hexbuf, bytes, sizeof bytes, &blen);
+    }
+
+    static char insns[64][256];
+    static int sizes[64];
+    int count = 0;
+    char err[512];
+    if (disasm_with_sizes(bytes, blen, mode, insns, sizes, 64, &count, err, sizeof err) != 0) {
+        snprintf(msg, msgcap, "%s", err);
+        return -1;
+    }
+
+    /* таблица: заголовки = поля, на которые разбивается команда */
+    size_t pos = 0;
+    pos += (size_t)snprintf(out + pos, cap - pos,
+        "%-3s | %-7s | %-8s | %-22s | %-10s | %-4s\n",
+        "N", "Prefix", "Opcode", "Operands", "Immediate", "Size");
+    pos += (size_t)snprintf(out + pos, cap - pos,
+        "----+---------+----------+------------------------+------------+-----\n");
+    for (int i = 0; i < count && pos < cap - 300; i++) {
+        InsnFields f;
+        insn_split(insns[i], mode, &f);
+        f.size = sizes[i];
+        pos += (size_t)snprintf(out + pos, cap - pos,
+            "%-3d | %-7s | %-8s | %-22s | %-10s | %-4d\n",
+            i + 1, prefix_name(f.prefix), f.opcode,
+            f.operands[0] ? f.operands : "-",
+            f.imm[0] ? f.imm : "-", f.size);
+    }
+
+    snprintf(msg, msgcap, "%d инструкци%s · режим %s · всего %zu байт",
+             count, (count == 1 ? "я" : (count < 5 ? "и" : "й")),
+             mode_name[mode], blen);
+    return 0;
+}
 
 void explain_line(const char *line, char *out, size_t cap)
 {

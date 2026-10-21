@@ -28,4 +28,24 @@ int engine_disassemble(const char *hexstr, Mode mode,
 /* Короткое русское пояснение к инструкции (по первой мнемонике). */
 void explain_line(const char *line, char *out, size_t cap);
 
+/* Разбить инструкцию на поля для таблицы разбора:
+ * opcode / operands / imm — строки; prefix/bits/size — числа (-1 = нет). */
+typedef struct {
+    char opcode[32];   /* мнемоника, напр. "mov" или "rep stosb" */
+    char operands[192];/* операнды, напр. "ax, 0x4C00" */
+    char imm[64];      /* immediate-часть, если есть ("0x4C00") */
+    int  prefix;       /* 0 rep, 1 repe/je, 2 repne/jne, 3 lock, -1 нет */
+    int  bits;         /* разрядность из режима (16/32/64) */
+    int  size;         /* размер кода команды в байтах, -1 неизвестно */
+} InsnFields;
+
+void insn_split(const char *line, Mode mode, InsnFields *f);
+
+/* Построить текстовую таблицу разбора кода (для GUI/CLI).
+ * src — исходник asm или hex; если is_hex=1 — сначала деассемблируем.
+ * out — многострочная таблица с заголовками полей. */
+int engine_breakdown(const char *src, Mode mode, int is_hex,
+                     char *out, size_t cap,
+                     char *msg, size_t msgcap);
+
 #endif

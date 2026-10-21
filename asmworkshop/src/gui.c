@@ -1,7 +1,9 @@
-/* gui.c — ASM Workshop: минималистичный современный интерфейс (GTK3, чистый C).
- * Тёмная тема, моноширинный ввод/вывод, режимы COM16/16/32/64, кнопки копирования.
+/* gui.c — ASM Workshop: бело-синий интерфейс (GTK3, чистый C).
+ * Моноширинный ввод/вывод, режимы COM16/16/32/64, кнопки копирования,
+ * таблица разбора команды (по полям) через GtkTreeView.
  */
 #include "core.h"
+#include "theme.h"
 
 #include <gtk/gtk.h>
 #include <stdio.h>
@@ -14,32 +16,11 @@ static GtkWidget *asm_out, *hex_out;    /* результаты */
 static GtkWidget *asm_note, *hex_note;  /* пояснения */
 static GtkWidget *statusbar;
 
-/* ─────────────── палитра / стиль ─────────────── */
+/* ─────────────── стиль (палитра в theme.h) ─────────────── */
 
-static const char *CSS =
-"window { background:#14161a; color:#e8eaf0; }"
-"label { color:#e8eaf0; font-family:'Inter','Segoe UI',sans-serif; }"
-".brand { font-size:22px; font-weight:800; letter-spacing:2px; color:#7dd3fc; }"
-".sub  { font-size:11px; color:#8b93a7; letter-spacing:1px; }"
-".card { background:#1b1e24; border-radius:14px; border:1px solid #262a33; }"
-".cardtitle { font-size:11px; font-weight:700; letter-spacing:2px; color:#8b93a7; }"
-"textview, textview text { background:#16191f; color:#e8eaf0;"
-"  font-family:'JetBrains Mono','Cascadia Code','Fira Code',monospace; font-size:14px;"
-"  border-radius:8px; }"
-"textview.out text { color:#a5f3fc; }"
-"button { background:#232837; color:#e8eaf0; border:none; border-radius:10px;"
-"  padding:9px 18px; font-weight:700; }"
-"button:hover { background:#2d3446; }"
-"button.primary { background:#0ea5e9; color:#081018; }"
-"button.primary:hover { background:#38bdf8; }"
-"button.flat { background:transparent; color:#8b93a7; padding:4px 10px; }"
-"button.flat:hover { color:#7dd3fc; background:#1b1e24; }"
-"combobox, combobox box { background:#232837; color:#e8eaf0; border-radius:8px; }"
-"notebook header { background:transparent; }"
-"separator { background:#262a33; min-height:1px; }"
-".note { color:#fbbf24; font-size:12px; }"
-".err  { color:#f87171; font-size:12px; }"
-".ok   { color:#34d399; font-size:12px; }";
+#define OK_COLOR   "#15803d"
+#define ERR_COLOR  "#b91c1c"
+#define MUTED      "#5b7ba6"
 
 static Mode current_mode(void)
 {
@@ -73,18 +54,104 @@ static void show_result(GtkWidget *note_lbl, GtkWidget *out_tv,
     GString *s = g_string_new(NULL);
     g_string_append_printf(s,
         "<span foreground='%s' weight='bold'>%s</span>\n",
-        is_err ? "#f87171" : "#34d399", is_err ? "✕ ошибка" : "✓ готово");
+        is_err ? ERR_COLOR : OK_COLOR, is_err ? "✕ ошибка" : "✓ готово");
     /* все строки msg мелким шрифтом */
     char **lines = g_strsplit(msg, "\n", -1);
     for (int i = 0; lines[i]; i++) {
         char *esc = g_markup_escape_text(lines[i], -1);
         g_string_append_printf(s, "<span size='9000' foreground='%s'>%s</span>\n",
-                               is_err ? "#f87171" : "#9aa4ba", esc);
+                               is_err ? ERR_COLOR : MUTED, esc);
         g_free(esc);
     }
     g_strfreev(lines);
     gtk_label_set_markup(GTK_LABEL(note_lbl), s->str);
     g_string_free(s, TRUE);
+}
+
+/* ─────────────── таблица разбора команды ─────────────── */
+
+enum { COL_N, COL_PFX, COL_OP, COL_OPS, COL_IMM, COL_SIZE, N_COLS };
+
+static GtkListStore *bd_store;   /* нижняя панель: разбор по полям */
+static GtkListStore *lbd_store;  /* карточка ассемблирования */
+static GtkListStore *rbd_store;  /* карточка деассемблирования */
+
+static GtkWidget *make_breakdown_tree(const char *title, GtkListStore **store_out)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+
+    GtkWidget *lbl = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(lbl), title);
+    gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+    gtk_style_context_add_class(gtk_widget_get_style_context(lbl), "cardtitle");
+    gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
+
+    GtkListStore *store = gtk_list_store_new(N_COLS,
+        G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+        G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+    *store_out = store;
+
+    GtkWidget *tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    gtk_tree_view_set_grid_lines(GTK_TREE_VIEW(tree), GTK_TREE_VIEW_GRID_LINES_BOTH);
+
+    const char *heads[] = { "№", "Префикс", "Opcode", "Операнды", "Immediate", "Размер, байт" };
+    for (int i = 0; i < N_COLS; i++) {
+        GtkCellRenderer *r = gtk_cell_renderer_text_new();
+        g_object_set(r, "family", "monospace", NULL);
+        if (i == COL_N || i == COL_SIZE)
+            g_object_set(r, "xalign", 0.5f, NULL);
+        GtkTreeViewColumn *c = gtk_tree_view_column_new_with_attributes(
+            heads[i], r, "text", i, NULL);
+        gtk_tree_view_column_set_resizable(c, TRUE);
+        if (i == COL_OPS) gtk_tree_view_column_set_expand(c, TRUE);
+        gtk_tree_view_append_column(GTK_TREE_VIEW(tree), c);
+    }
+
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(sw), GTK_SHADOW_IN);
+    gtk_container_add(GTK_CONTAINER(sw), tree);
+    gtk_box_pack_start(GTK_BOX(box), sw, TRUE, TRUE, 0);
+    return box;
+}
+
+/* Заполнить таблицу из текста разбора: строка данных = "a | b | c | d | e | f". */
+static void fill_breakdown(GtkListStore *store, const char *table)
+{
+    gtk_list_store_clear(store);
+    char **lines = g_strsplit(table, "\n", -1);
+    for (int i = 0; lines[i]; i++) {
+        char *ln = lines[i];
+        if (!ln[0]) continue;
+        if (strstr(ln, "----+")) continue;                 /* разделитель */
+        if (strstr(ln, "Opcode") && strstr(ln, "Operands")) continue; /* заголовок */
+        int bars = 0;
+        for (char *q = ln; *q; q++) if (*q == '|') bars++;
+        if (bars < N_COLS - 1) continue;                   /* не строка данных */
+        /* разрезать по '|' */
+        char *cols[N_COLS] = {0};
+        int ncol = 0;
+        char *p = ln;
+        while (ncol < N_COLS - 1) {
+            char *bar = strchr(p, '|');
+            if (!bar) break;
+            *bar = 0;
+            cols[ncol++] = p;
+            p = bar + 1;
+        }
+        cols[ncol++] = p;
+        GtkTreeIter it;
+        gtk_list_store_append(store, &it);
+        for (int c = 0; c < N_COLS; c++) {
+            char buf[256];
+            const char *v = cols[c] ? cols[c] : "";
+            while (*v == ' ') v++;
+            snprintf(buf, sizeof buf, "%s", v);
+            size_t L = strlen(buf);
+            while (L && buf[L-1] == ' ') buf[--L] = 0;
+            gtk_list_store_set(store, &it, c, buf, -1);
+        }
+    }
+    g_strfreev(lines);
 }
 
 /* ─────────────── обработчики ─────────────── */
@@ -95,6 +162,16 @@ static void do_assemble(void)
     char hex[2048], msg[512];
     int rc = engine_assemble(src, current_mode(), hex, sizeof hex, msg, sizeof msg);
     show_result(asm_note, asm_out, msg, rc == 0 ? hex : "", rc != 0);
+    /* таблица разбора по полям */
+    if (lbd_store) {
+        if (rc == 0) {
+            char table[8192], tmsg[512];
+            if (engine_breakdown(src, current_mode(), 0, table, sizeof table,
+                                 tmsg, sizeof tmsg) == 0)
+                fill_breakdown(lbd_store, table);
+            else gtk_list_store_clear(lbd_store);
+        } else gtk_list_store_clear(lbd_store);
+    }
     g_free(src);
 }
 
@@ -110,6 +187,15 @@ static void do_disassemble(void)
     char asm_[2048], msg[512];
     int rc = engine_disassemble(hx, current_mode(), asm_, sizeof asm_, msg, sizeof msg);
     show_result(hex_note, hex_out, msg, rc == 0 ? asm_ : "", rc != 0);
+    if (rbd_store) {
+        if (rc == 0) {
+            char table[8192], tmsg[512];
+            if (engine_breakdown(hx, current_mode(), 1, table, sizeof table,
+                                 tmsg, sizeof tmsg) == 0)
+                fill_breakdown(rbd_store, table);
+            else gtk_list_store_clear(rbd_store);
+        } else gtk_list_store_clear(rbd_store);
+    }
     g_free(hx);
 }
 
@@ -257,7 +343,7 @@ int main(int argc, char **argv)
 
     /* глобальный CSS */
     GtkCssProvider *prov = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(prov, CSS, -1, NULL);
+    gtk_css_provider_load_from_data(prov, THEME_CSS, -1, NULL);
     gtk_style_context_add_provider_for_screen(
         gdk_screen_get_default(), GTK_STYLE_PROVIDER(prov),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -277,8 +363,8 @@ int main(int argc, char **argv)
 
     GtkWidget *brand = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(brand),
-        "<span size='20000' weight='bold' foreground='#7dd3fc'>⌁ ASM WORKSHOP</span>"
-        "\n<span size='9000' foreground='#8b93a7'>ассемблер ⇄ деасемблер · NASM · Intel · DOSBox COM</span>");
+        "<span size='20000' weight='bold' foreground='#1d4ed8'>⌁ ASM WORKSHOP</span>"
+        "\n<span size='9000' foreground='#5b7ba6'>ассемблер ⇄ деасемблер · NASM · Intel · DOSBox COM</span>");
     gtk_widget_set_halign(brand, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(head), brand, TRUE, TRUE, 0);
 
@@ -326,6 +412,10 @@ int main(int argc, char **argv)
     gtk_widget_set_halign(asm_note, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(lcontent), asm_note, FALSE, FALSE, 0);
 
+    /* таблица разбора команды по полям */
+    GtkWidget *lbd = make_breakdown_tree("РАЗБОР КОМАНДЫ ПО ПОЛЯМ", &lbd_store);
+    gtk_box_pack_start(GTK_BOX(lcontent), lbd, TRUE, TRUE, 0);
+
     /* правая: деассемблирование */
     GtkWidget *rcontent;
     GtkWidget *rcard = make_card("ДЕАССЕМБЛИРОВАНИЕ   HEX → ASM", &rcontent);
@@ -356,10 +446,14 @@ int main(int argc, char **argv)
     gtk_widget_set_halign(hex_note, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(rcontent), hex_note, FALSE, FALSE, 0);
 
+    /* таблица разбора команды по полям */
+    GtkWidget *rbd = make_breakdown_tree("РАЗБОР КОМАНДЫ ПО ПОЛЯМ", &rbd_store);
+    gtk_box_pack_start(GTK_BOX(rcontent), rbd, TRUE, TRUE, 0);
+
     /* ── нижняя строка состояния ── */
     statusbar = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(statusbar),
-        "<span foreground='#8b93a7'>nasm + objdump · введите команду (mov ax, 1) или байты (B8 01 00) · Ctrl+Enter = собрать</span>");
+        "<span foreground='#5b7ba6'>nasm + objdump · введите команду (mov ax, 1) или байты (B8 01 00) · Ctrl+Enter = собрать · Ctrl+R = разбор по полям</span>");
     GtkWidget *foot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(foot), 10);
     gtk_box_pack_start(GTK_BOX(foot), statusbar, TRUE, TRUE, 0);
@@ -376,6 +470,9 @@ int main(int argc, char **argv)
     set_buf(hex_in, "B8 01 00 00 00");
 
     gtk_widget_show_all(win);
+    /* показать разбор полей для стартовых примеров */
+    do_assemble();
+    do_disassemble();
     gtk_main();
     return 0;
 }
