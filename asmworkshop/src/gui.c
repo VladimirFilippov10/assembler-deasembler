@@ -72,7 +72,6 @@ static void show_result(GtkWidget *note_lbl, GtkWidget *out_tv,
 
 enum { COL_N, COL_PFX, COL_OP, COL_OPS, COL_IMM, COL_SIZE, N_COLS };
 
-static GtkListStore *bd_store;   /* нижняя панель: разбор по полям */
 static GtkListStore *lbd_store;  /* карточка ассемблирования */
 static GtkListStore *rbd_store;  /* карточка деассемблирования */
 
