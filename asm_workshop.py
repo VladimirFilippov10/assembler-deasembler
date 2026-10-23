@@ -548,10 +548,10 @@ button:active{transform:scale(.97)}
 .ghost{background:transparent;border:1px solid var(--line);color:var(--mut)}
 .ghost:hover{color:var(--ink);border-color:var(--acc)}
 .out{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;
-font-family:var(--mono);font-size:13.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word;
+font-family:var(--mono);font-size:13.5px;line-height:1.7;
 min-height:120px;overflow:auto;max-height:340px}
 .err{color:var(--warn)}
-table{width:100%;border-collapse:collapse;font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13px;white-space:normal}
 td,th{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:1px}
 .addr{color:var(--mut);font-family:var(--mono)}
@@ -564,11 +564,27 @@ footer{padding:14px 28px;border-top:1px solid var(--line);color:var(--mut);font-
 display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .kbd{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-family:var(--mono);font-size:11px}
 .copy{font-size:11px;padding:6px 10px}
+/* ── модалка «О программе» ── */
+.modal{display:none;position:fixed;inset:0;background:rgba(5,7,12,.72);backdrop-filter:blur(3px);
+z-index:50;align-items:center;justify-content:center;padding:20px}
+.modal.open{display:flex}
+.modal-box{background:var(--panel);border:1px solid var(--line);border-radius:16px;max-width:680px;
+width:100%;max-height:82vh;overflow:auto;padding:22px 26px;position:relative}
+.modal-box h3{font-size:16px;margin-bottom:4px}
+.modal-box .sub{margin-bottom:14px}
+.modal-box section{margin-bottom:18px}
+.modal-box section h4{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--acc);margin-bottom:8px}
+.modal-box p,.modal-box li{color:var(--mut);font-size:13px;line-height:1.65}
+.modal-box ul{padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.close{position:absolute;top:12px;right:14px;background:transparent;border:1px solid var(--line);
+color:var(--mut);border-radius:8px;padding:4px 10px;font-size:12px}
+.close:hover{color:var(--ink);border-color:var(--acc)}
 </style></head><body>
 <header>
  <div class="logo">λ</div>
- <div><h1>__TITLE__ <span class="badge">NASM · Intel</span></h1>
+ <div style="flex:1"><h1>__TITLE__ <span class="badge">NASM · Intel</span></h1>
  <div class="sub">__SUB__</div></div>
+ <button class="ghost" onclick="openAbout()">ℹ О программе</button>
 </header>
 <main>
  <section class="card">
@@ -596,9 +612,54 @@ display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
  <div>NASM + __ENGINE__ · для DOSBox выбирайте режим COM — байты готовы для debug.exe / .COM</div>
  <div><span class="kbd">Ctrl+Enter</span> — выполнить в активном поле</div>
 </footer>
+<div class="modal" id="aboutModal" onclick="if(event.target===this)closeAbout()">
+ <div class="modal-box">
+  <button class="close" onclick="closeAbout()">✕ Закрыть</button>
+  <h3>__TITLE__ <span class="badge">v1.0</span></h3>
+  <div class="sub">__SUB__</div>
+
+  <section>
+   <h4>Назначение</h4>
+   <p>Минималистичный ассемблер / деасемблер синтаксиса Intel (NASM).
+   Преобразует текст инструкций в байты (hex) и обратно, с пояснениями к каждой строке.
+   Режим <b>COM (.COM 16-bit)</b> даёт байты, готовые для работы в DOSBox через debug.exe или загрузку .COM-файла.</p>
+  </section>
+
+  <section>
+   <h4>Режимы</h4>
+   <ul>
+    <li><b>com</b> — 16-битные .COM для DOS/DOSBox (ORG 0x100)</li>
+    <li><b>16 / 32 / 64</b> — «сырые» байты соответствующей разрядности</li>
+   </ul>
+  </section>
+
+  <section>
+   <h4>Как пользоваться</h4>
+   <ul>
+    <li>В левом окне введите инструкции по одной на строку (метки и переходы поддерживаются) — нажмите «Собрать ▸» или Ctrl+Enter.</li>
+    <li>В правом окне введите hex-байты парами, например <span class="kbd">B4 0E B0 41 CD 10 C3</span> — нажмите «Разобрать ▸».</li>
+    <li>Кнопка «Копировать» копирует результат в буфер обмена.</li>
+   </ul>
+  </section>
+
+  <section>
+   <h4>Требования</h4>
+   <p>Для ассемблирования нужен установленный и доступный в PATH <b>NASM</b>.
+   Для деассемблирования используется <b>objdump</b> (GNU binutils); если его нет — встроенная база известных кодов.</p>
+  </section>
+
+  <section>
+   <h4>Лицензия</h4>
+   <p>Бесплатное использование в учебных целях.</p>
+  </section>
+ </div>
+</div>
 <script>
 const $=id=>document.getElementById(id);
 function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function openAbout(){$('aboutModal').classList.add('open')}
+function closeAbout(){$('aboutModal').classList.remove('open')}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeAbout()});
 async function post(u,d){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});return r.json()}
 function copyTxt(id){navigator.clipboard.writeText($(id).innerText)}
 async function doAsm(){
