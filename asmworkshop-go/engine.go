@@ -116,20 +116,108 @@ func Assemble(src string, m Mode) (hex string, res Result) {
 		return hex, Result{Text: txt}
 	}
 
-	// Без NASM — встроенный мини-ассемблер (одна базовая инструкция).
-	ins := lastInsnLine(src)
-	data, err := miniAssemble(ins, m)
-	if err != nil {
-		return "", Result{Text: "Мини-движок: " + err.Error() +
-			"\n(установите nasm для полного синтаксиса)", IsErr: true}
+	// Без NASM — встроенный мини-ассемблер: собираем построчно все инструкции.
+	var all []byte
+	var failed []string
+	for _, ln := range strings.Split(src, "\n") {
+		t := strings.TrimSpace(ln)
+		if t == "" || strings.HasSuffix(t, ":") {
+			continue // пустые строки и метки не дают байт
+		}
+		first := strings.ToLower(strings.Fields(t)[0])
+		if first == "bits" || first == "org" || first == "section" || first == "global" ||
+			strings.HasPrefix(first, "%") {
+			continue // служебные директивы
+		}
+		data, err := miniAssemble(t, m)
+		if err != nil {
+			failed = append(failed, t)
+			continue
+		}
+		all = append(all, data...)
 	}
-	hex = bytesToHex(data)
-	expl := ExplainLine(ins)
-	txt := fmt.Sprintf("%d байт · режим %s · встроенный мини-движок", len(data), modeName[m])
+	if len(all) == 0 {
+		what := "пустой код"
+		if len(failed) > 0 {
+			what = "Мини-движок: " + failed[0]
+		}
+		return "", Result{Text: what +
+			"\n(встроенный движок понимает базовые команды x86; для полного синтаксиса установите nasm рядом с asmworkshop.exe или в PATH)", IsErr: true}
+	}
+	hex = bytesToHex(all)
+	expl := ExplainLine(src)
+	txt := fmt.Sprintf("%d байт · режим %s · встроенный мини-движок", len(all), modeName[m])
+	if len(failed) > 0 {
+		txt += fmt.Sprintf("\n⚠ не распознано мини-движком (%d): %s — установите nasm", len(failed), strings.Join(failed, "; "))
+	}
 	if expl != "" {
 		txt += "\n" + expl
 	}
 	return hex, Result{Text: txt}
+}
+
+// ndisasmPath — где лежит ndisasm.exe (входит в поставку NASM для Windows).
+func ndisasmPath() (string, bool) {
+	p, err := lookTool("ndisasm")
+	return p, err == nil
+}
+
+// ndisasmDisasm — деассемблирование через ndisasm (ставится вместе с nasm.exe).
+func ndisasmDisasm(data []byte, m Mode) (string, []int, Result) {
+	tool, ok := ndisasmPath()
+	if !ok {
+		return "", nil, Result{Text: "ndisasm не найден", IsErr: true}
+	}
+	bitsArg := "-" + modeBits[m]
+	cmd := exec.Command(tool, "-b", bitsArg, "-o", "0", "-u", "-")
+	cmd.Stdin = bytes.NewReader(data)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", nil, Result{Text: "ndisasm: " + firstLine(stderr.String()), IsErr: true}
+	}
+	var lines []string
+	var sizes []int
+	for _, ln := range strings.Split(stdout.String(), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, ";") {
+			continue
+		}
+		// формат: "00000000  B801000000        mov ax,0x4c00"
+		f := strings.Fields(ln)
+		if len(f) < 3 {
+			continue
+		}
+		bs, err := hexBytePairs(f[1])
+		if err != nil {
+			continue
+		}
+		insn := strings.Join(f[2:], " ")
+		// нормализация пробелов/запятых
+		insn = normalizeOps(insn)
+		lines = append(lines, insn)
+		sizes = append(sizes, len(bs))
+	}
+	if len(lines) == 0 {
+		return "", nil, Result{Text: "ndisasm вернул пусто", IsErr: true}
+	}
+	return strings.Join(lines, "\n"), sizes, Result{}
+}
+
+func hexBytePairs(s string) ([]byte, error) {
+	if len(s)%2 != 0 {
+		return nil, fmt.Errorf("нечётная длина")
+	}
+	var out []byte
+	for i := 0; i+2 <= len(s); i += 2 {
+		v, err := strconv.ParseUint(s[i:i+2], 16, 8)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, byte(v))
+	}
+	return out, nil
 }
 
 func bytesToHex(d []byte) string {
@@ -157,7 +245,8 @@ func Disassemble(hexstr string, m Mode) (asm string, res Result) {
 		return "", Result{Text: "Не нашёл ни одного байта в hex-строке", IsErr: true}
 	}
 
-	if haveTool("objdump") {
+	_, oerr := lookTool("objdump")
+	if oerr == nil {
 		out, rerr := objdumpDisasm(data, m)
 		if rerr.IsErr {
 			return "", rerr
@@ -170,6 +259,20 @@ func Disassemble(hexstr string, m Mode) (asm string, res Result) {
 			txt += "\n" + expl
 		}
 		return out, Result{Text: txt}
+	}
+
+	// objdump нет — пробуем ndisasm (обычно лежит рядом с nasm.exe в поставке NASM).
+	if _, ok := ndisasmPath(); ok {
+		out, _, r := ndisasmDisasm(data, m)
+		if !r.IsErr {
+			lines := strings.Split(out, "\n")
+			expl := ExplainLine(lines[len(lines)-1])
+			txt := fmt.Sprintf("%s · режим %s · ndisasm", pluralInsns(len(lines)), modeName[m])
+			if expl != "" {
+				txt += "\n" + expl
+			}
+			return out, Result{Text: txt}
+		}
 	}
 
 	// Встроенный мини-деасемблер.
@@ -395,7 +498,20 @@ func Breakdown(src string, m Mode, isHex bool) (table string, summary string, re
 			}
 			rows = append(rows, row{ln, sz})
 		}
-	} else {
+	} else if _, ok := ndisasmPath(); ok {
+		out, sizes, r := ndisasmDisasm(data, m)
+		if !r.IsErr {
+			lines := strings.Split(out, "\n")
+			for i, ln := range lines {
+				sz := -1
+				if i < len(sizes) {
+					sz = sizes[i]
+				}
+				rows = append(rows, row{ln, sz})
+			}
+		}
+	}
+	if rows == nil {
 		for i := 0; i < len(data); {
 			s, n := miniDisasm(data[i:], m)
 			if n <= 0 {

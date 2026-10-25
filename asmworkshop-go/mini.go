@@ -109,19 +109,15 @@ func miniAssemble(line string, m Mode) ([]byte, error) {
 	}
 
 	oneArg := map[string][]byte{
-		"nop":  {0x90},
-		"ret":  {0xC3},
-		"hlt":  {0xF4},
-		"cli":  {0xFA},
-		"sti":  {0xFB},
-		"cld":  {0xFC},
-		"std":  {0xFD},
-		"cbw":  {0x98},
-		"cwd":  {0x99},
-		"inc":  nil,
-		"dec":  nil,
-		"push": nil,
-		"pop":  nil,
+		"nop": {0x90},
+		"ret": {0xC3},
+		"hlt": {0xF4},
+		"cli": {0xFA},
+		"sti": {0xFB},
+		"cld": {0xFC},
+		"std": {0xFD},
+		"cbw": {0x98},
+		"cwd": {0x99},
 	}
 	alts := map[string]string{"jz": "je", "jnz": "jne"}
 	if a, ok := alts[op]; ok {
@@ -134,6 +130,65 @@ func miniAssemble(line string, m Mode) ([]byte, error) {
 		operandSize = 4
 	case Mode64:
 		operandSize = 8
+	}
+
+	// inc/dec reg — однобайтные формы 0x40+р / 0x48+р (в 32/64-бит требует префикса 0xFF)
+	if op == "inc" || op == "dec" {
+		if len(ops) == 1 {
+			r := strings.ToLower(ops[0])
+			if operandSize >= 4 {
+				if v, ok := regs32[r]; ok {
+					b := []byte{0xFF}
+					if op == "dec" {
+						b[0] = 0xFE
+					}
+					return append(b, 0xC0+v), nil
+				}
+				if v, ok := regs64[r]; ok {
+					base := byte(0xFF)
+					if op == "dec" {
+						base = 0xFE
+					}
+					if v >= 8 {
+						return []byte{0x40 | (v & 8), base, 0xC0 + v&7}, nil
+					}
+					return []byte{base, 0xC0 + v}, nil
+				}
+			}
+			if v, ok := regs16[r]; ok {
+				b := []byte{}
+				if operandSize != 2 {
+					b = append(b, 0x66)
+				}
+				base := byte(0x40)
+				if op == "dec" {
+					base = 0x48
+				}
+				return append(b, base+v), nil
+			}
+			if v, ok := regs8[r]; ok && !ahchdhbh(r) {
+				// FE /0 inc r/m8, FE /1 dec r/m8
+				reg := byte(0)
+				switch r {
+				case "al":
+					reg = 0
+				case "cl":
+					reg = 1
+				case "dl":
+					reg = 2
+				case "bl":
+					reg = 3
+				default:
+					return nil, fmt.Errorf("inc/dec %s без nasm не поддерживается", r)
+				}
+				_ = v
+				modrm := byte(0xC0 | reg)
+				if op == "dec" {
+					modrm |= 1 << 3
+				}
+				return []byte{0xFE, modrm}, nil
+			}
+		}
 	}
 
 	switch op {
@@ -195,7 +250,7 @@ func miniAssemble(line string, m Mode) ([]byte, error) {
 				}
 			}
 		}
-	case "mov", "add", "sub", "cmp", "and", "or", "xor", "test":
+	case "mov", "add", "sub", "cmp", "and", "or", "xor", "test", "adc", "sbb":
 		if len(ops) != 2 {
 			break
 		}
@@ -207,7 +262,7 @@ func miniAssemble(line string, m Mode) ([]byte, error) {
 		}
 		// reg, imm
 		if sz, rnum, rex, ok := lookupReg(dst, m); ok {
-			if v, numOK := parseNum(src); numOK {
+			if v, numOK := parseNum(src); numOK && op != "test" {
 				return encodeRegImm(op, code, sz, rnum, rex, v, m), nil
 			}
 			// reg, reg
@@ -215,7 +270,25 @@ func miniAssemble(line string, m Mode) ([]byte, error) {
 				return encodeRegReg(code, sz, rnum, rex, rnum2, rex2), nil
 			}
 		}
-		// r/m8 special: mov al, imm8 / ax, imm16 handled above via lookupReg
+		// mem <-> reg: mov/add/sub/cmp [bx+si], ax и т.п.
+		if dmem, ok := parseMemOperand(dst); ok {
+			if sz, rnum, _, ok2 := lookupReg(src, m); ok2 {
+				return encodeMemOp(code, op == "mov", sz, byte(rnum), dmem, m)
+			}
+			if v, ok3 := parseNum(src); ok3 && op == "mov" {
+				sz := defaultSize(m, false, false)
+				if sz == 1 {
+					sz = 2
+				}
+				return encodeMemImm(sz, dmem, v, m)
+			}
+		}
+		if smem, ok := parseMemOperand(src); ok {
+			if sz, rnum, _, ok2 := lookupReg(dst, m); ok2 {
+				return encodeMemOp(code, true, sz, byte(rnum), smem, m)
+			}
+		}
+		// r/m special: mov al, imm8 / ax, imm16 handled above via lookupReg
 	}
 	return nil, fmt.Errorf("не поддерживаю «%s» без установленного nasm", line)
 }
@@ -356,6 +429,271 @@ func boolByte(v bool) uint8 {
 		return 1
 	}
 	return 0
+}
+
+// ─────────────── память: [bx+si], [bp+4], [eax+8] и т.п. ───────────────
+
+type memOp struct {
+	form  string // "m16" — 16-битная форма (base/index из bx,bp,si,di), "m32" — с SIB
+	base  string
+	index string
+	disp  int64
+	size  int // явный размер из byte/word/dword ptr, 0 = нет
+}
+
+var rm16 = map[string]uint8{"bx": 3, "bp": 5, "si": 6, "di": 7}
+
+func parseMemOperand(tok string) (memOp, bool) {
+	t := strings.ToLower(strings.TrimSpace(tok))
+	var mo memOp
+	for _, p := range []struct {
+		n string
+		s int
+	}{{"byte ", 1}, {"word ", 2}, {"dword ", 4}, {"qword ", 8}} {
+		if strings.HasPrefix(t, p.n) {
+			t = strings.TrimSpace(t[len(p.n):])
+			mo.size = p.s
+		}
+	}
+	if strings.HasPrefix(t, "ptr ") {
+		t = strings.TrimSpace(t[4:])
+	}
+	open := strings.IndexByte(t, '[')
+	if open < 0 {
+		return mo, false
+	}
+	if open > 0 {
+		seg := strings.TrimSuffix(t[:open], ":")
+		if seg != "es" && seg != "ds" && seg != "ss" && seg != "fs" && seg != "gs" {
+			return mo, false
+		}
+	}
+	closeIdx := strings.LastIndexByte(t, ']')
+	inner := strings.TrimSpace(t[open+1 : closeIdx])
+	if inner == "" {
+		return mo, false
+	}
+	parts := strings.Split(inner, "+")
+	first := strings.TrimSpace(parts[0])
+	// чистое число: [1234h] — 16-бит abs (mod=00 rm=6)
+	if _, _, _, ok := lookupReg(first, Mode16); !ok {
+		if len(parts) == 1 {
+			if v, ok2 := parseNum(first); ok2 {
+				mo.form = "m16abs"
+				mo.disp = v
+				return mo, true
+			}
+		}
+		return mo, false
+	}
+	var disp int64
+	for _, rp := range parts[1:] {
+		rp = strings.TrimSpace(rp)
+		if _, _, _, ok := lookupReg(rp, Mode16); ok && isLow16(rp) {
+			if mo.index != "" {
+				return mo, false
+			}
+			mo.index = rp
+			continue
+		}
+		v, ok := parseNum(rp)
+		if !ok {
+			return mo, false
+		}
+		disp += v
+	}
+	mo.disp = disp
+	if isLow16(first) {
+		if first != "bx" && first != "bp" && first != "si" && first != "di" {
+			return mo, false
+		}
+		if mo.index != "" && mo.index != "si" && mo.index != "di" {
+			return mo, false
+		}
+		mo.form = "m16"
+		mo.base = first
+		return mo, true
+	}
+	// 32/64-бит база
+	mo.form = "m32"
+	mo.base = first
+	return mo, true
+}
+
+func isLow16(r string) bool {
+	_, ok := regs16[r]
+	return ok
+}
+
+// encodeMemOp: dir=true → опкод /r с reg в reg-поле (mov/add reg, [mem]);
+// dir=false → mov/add [mem], reg.
+func encodeMemOp(code uint8, isMov bool, sz int, reg byte, mo memOp, m Mode) ([]byte, error) {
+	var b []byte
+	defSz := defaultSize(m, false, false)
+	if sz == 2 && defSz != 2 {
+		b = append(b, 0x66)
+	} else if sz == 4 && defSz == 2 {
+		b = append(b, 0x66)
+	}
+	var opcode byte
+	if sz == 1 {
+		opcode = code<<3 + 0x00
+		if isMov {
+			opcode = 0x8A
+		}
+	} else {
+		opcode = code<<3 + 0x01
+		if isMov {
+			opcode = 0x8B
+		}
+	}
+	rm, err := encodeModRM1632(mo, reg, m)
+	if err != nil {
+		return nil, err
+	}
+	return append(append(b, opcode), rm...), nil
+}
+
+func encodeMemImm(sz int, mo memOp, v int64, m Mode) ([]byte, error) {
+	var b []byte
+	defSz := defaultSize(m, false, false)
+	if sz == 2 && defSz != 2 {
+		b = append(b, 0x66)
+	} else if sz == 4 && defSz == 2 {
+		b = append(b, 0x66)
+	}
+	opcode := byte(0xC7)
+	if sz == 1 {
+		opcode = 0xC6
+	}
+	rm, err := encodeModRM1632(mo, 0, m)
+	if err != nil {
+		return nil, err
+	}
+	b = append(append(b, opcode), rm...)
+	n := sz
+	if n >= 8 {
+		n = 4
+	}
+	for i := 0; i < n; i++ {
+		b = append(b, byte(v>>(8*i)))
+	}
+	return b, nil
+}
+
+func encodeModRM1632(mo memOp, reg byte, m Mode) ([]byte, error) {
+	switch mo.form {
+	case "m16abs":
+		return []byte{0x06 | reg<<3, byte(mo.disp), byte(mo.disp >> 8)}, nil
+	case "m16":
+		rm, mod, err := modrm16(mo.base, mo.index, mo.disp)
+		if err != nil {
+			return nil, err
+		}
+		out := []byte{mod<<6 | reg<<3 | rm}
+		if mod == 1 {
+			out = append(out, byte(int8(mo.disp)))
+		} else if mod == 2 {
+			out = append(out, byte(mo.disp), byte(mo.disp>>8))
+		}
+		return out, nil
+	case "m32":
+		numOf := func(n string) (uint8, bool) {
+			if v, ok := regs32[n]; ok {
+				return v, true
+			}
+			if v, ok := regs64[n]; ok {
+				return v & 7, true
+			}
+			return 0, false
+		}
+		bn, ok := numOf(mo.base)
+		if !ok || bn == 4 || (bn == 5 && mo.index == "") {
+			if bn == 5 && mo.index == "" {
+				// [rbp]/[ebp] требует disp8=0
+				mod := byte(1)
+				d := mo.disp
+				if d >= -128 && d <= 127 {
+					return []byte{mod<<6 | reg<<3 | 5, byte(int8(d))}, nil
+				}
+				return []byte{2<<6 | reg<<3 | 5, byte(d), byte(d >> 8), byte(d >> 16), byte(d >> 24)}, nil
+			}
+			return nil, fmt.Errorf("база %s недоступна", mo.base)
+		}
+		if mo.index != "" {
+			in, ok2 := numOf(mo.index)
+			if !ok2 {
+				return nil, fmt.Errorf("индекс %s недоступен", mo.index)
+			}
+			sib := in<<3 | bn
+			mod := byte(0)
+			if mo.disp != 0 {
+				if mo.disp >= -128 && mo.disp <= 127 {
+					mod = 1
+				} else {
+					mod = 2
+				}
+			}
+			out := []byte{mod<<6 | reg<<3 | 4, sib}
+			if mod == 1 {
+				out = append(out, byte(int8(mo.disp)))
+			} else if mod == 2 {
+				for i := 0; i < 4; i++ {
+					out = append(out, byte(mo.disp>>(8*i)))
+				}
+			}
+			return out, nil
+		}
+		mod := byte(0)
+		if mo.disp != 0 {
+			if mo.disp >= -128 && mo.disp <= 127 {
+				mod = 1
+			} else {
+				mod = 2
+			}
+		}
+		out := []byte{mod<<6 | reg<<3 | bn}
+		if mod == 1 {
+			out = append(out, byte(int8(mo.disp)))
+		} else if mod == 2 {
+			for i := 0; i < 4; i++ {
+				out = append(out, byte(mo.disp>>(8*i)))
+			}
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("форма памяти не распознана")
+}
+
+func modrm16(base, index string, disp int64) (rm uint8, mod uint8, err error) {
+	switch {
+	case base == "bx" && index == "si":
+		rm = 0
+	case base == "bx" && index == "di":
+		rm = 1
+	case base == "bp" && index == "si":
+		rm = 2
+	case base == "bp" && index == "di":
+		rm = 3
+	case base == "si" && index == "":
+		rm = 6
+	case base == "di" && index == "":
+		rm = 5
+	case base == "bp" && index == "":
+		rm = 4
+	case base == "bx" && index == "":
+		rm = 7
+	default:
+		return 0, 0, fmt.Errorf("недопустимая пара [%s+%s]", base, index)
+	}
+	if disp != 0 || rm == 6 {
+		if disp >= -128 && disp <= 127 {
+			mod = 1
+		} else {
+			mod = 2
+		}
+	}
+	return rm, mod, nil
 }
 
 // ─────────────── мини-деассемблер ───────────────
