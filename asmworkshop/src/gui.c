@@ -1,6 +1,9 @@
 /* gui.c — ASM Workshop: бело-синий интерфейс (GTK3, чистый C).
  * Моноширинный ввод/вывод, режимы COM16/16/32/64, кнопки копирования,
  * таблица разбора команды (по полям) через GtkTreeView.
+ *
+ * Блок «О программе» — раскрывающийся/закрывающийся кнопкой-переключателем
+ * в шапке окна, по умолчанию скрыт. Отдельного окна «О программе» нет.
  */
 #include "core.h"
 #include "theme.h"
@@ -15,7 +18,8 @@ static GtkWidget *asm_in, *hex_in;      /* текстовые поля */
 static GtkWidget *asm_out, *hex_out;    /* результаты */
 static GtkWidget *asm_note, *hex_note;  /* пояснения */
 static GtkWidget *statusbar;
-/* Блок «О программе» показывается только по кнопке в шапке окна. */
+static GtkWidget *about_box;            /* раскрывающийся блок «О программе» */
+static GtkWidget *about_btn;            /* кнопка-переключатель */
 
 /* ─────────────── стиль (палитра в theme.h) ─────────────── */
 
@@ -51,12 +55,10 @@ static void show_result(GtkWidget *note_lbl, GtkWidget *out_tv,
                         const char *msg, const char *body, int is_err)
 {
     set_buf(out_tv, body);
-    /* note_lbl показывает статус + первое сообщение */
     GString *s = g_string_new(NULL);
     g_string_append_printf(s,
         "<span foreground='%s' weight='bold'>%s</span>\n",
         is_err ? ERR_COLOR : OK_COLOR, is_err ? "✕ ошибка" : "✓ готово");
-    /* все строки msg мелким шрифтом */
     char **lines = g_strsplit(msg, "\n", -1);
     for (int i = 0; lines[i]; i++) {
         char *esc = g_markup_escape_text(lines[i], -1);
@@ -73,8 +75,8 @@ static void show_result(GtkWidget *note_lbl, GtkWidget *out_tv,
 
 enum { COL_N, COL_PFX, COL_OP, COL_OPS, COL_IMM, COL_SIZE, N_COLS };
 
-static GtkListStore *lbd_store;  /* карточка ассемблирования */
-static GtkListStore *rbd_store;  /* карточка деассемблирования */
+static GtkListStore *lbd_store;
+static GtkListStore *rbd_store;
 
 static GtkWidget *make_breakdown_tree(const char *title, GtkListStore **store_out)
 {
@@ -114,7 +116,6 @@ static GtkWidget *make_breakdown_tree(const char *title, GtkListStore **store_ou
     return box;
 }
 
-/* Заполнить таблицу из текста разбора: строка данных = "a | b | c | d | e | f". */
 static void fill_breakdown(GtkListStore *store, const char *table)
 {
     gtk_list_store_clear(store);
@@ -122,12 +123,11 @@ static void fill_breakdown(GtkListStore *store, const char *table)
     for (int i = 0; lines[i]; i++) {
         char *ln = lines[i];
         if (!ln[0]) continue;
-        if (strstr(ln, "----+")) continue;                 /* разделитель */
-        if (strstr(ln, "Opcode") && strstr(ln, "Operands")) continue; /* заголовок */
+        if (strstr(ln, "----+")) continue;
+        if (strstr(ln, "Opcode") && strstr(ln, "Operands")) continue;
         int bars = 0;
         for (char *q = ln; *q; q++) if (*q == '|') bars++;
-        if (bars < N_COLS - 1) continue;                   /* не строка данных */
-        /* разрезать по '|' */
+        if (bars < N_COLS - 1) continue;
         char *cols[N_COLS] = {0};
         int ncol = 0;
         char *p = ln;
@@ -162,7 +162,6 @@ static void do_assemble(void)
     char hex[2048], msg[512];
     int rc = engine_assemble(src, current_mode(), hex, sizeof hex, msg, sizeof msg);
     show_result(asm_note, asm_out, msg, rc == 0 ? hex : "", rc != 0);
-    /* таблица разбора по полям */
     if (lbd_store) {
         if (rc == 0) {
             char table[8192], tmsg[512];
@@ -205,7 +204,6 @@ static void on_disassemble(GtkButton *btn, gpointer u)
     do_disassemble();
 }
 
-/* Ctrl+Enter в любом текстовом поле запускает соответствующую сборку/разбор */
 static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer user_data)
 {
     (void)w;
@@ -227,7 +225,6 @@ static void copy_to_clip(const char *text)
 static char *buf_line(GtkWidget *tv)
 {
     char *t = get_buf(tv);
-    /* склеить многострочное в одну строку для копирования hex */
     for (char *p = t; *p; p++) if (*p == '\n') *p = ' ';
     return t;
 }
@@ -271,10 +268,112 @@ static void on_paste_here(GtkButton *b, gpointer tv)
 static void on_swap(GtkButton *b, gpointer u)
 {
     (void)b; (void)u;
-    /* результат слева -> поле справа (быстрый круг asm->hex->asm) */
     char *t = buf_line(asm_out);
     if (t && *t) set_buf(hex_in, t);
     g_free(t);
+}
+
+/* ─────────────── «О программе»: раскрыть/закрыть блок ─────────────── */
+
+static void force_show_recursive(GtkWidget *w)
+{
+    gtk_widget_show(w);
+    if (GTK_IS_CONTAINER(w)) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(w));
+        for (GList *l = children; l != NULL; l = l->next)
+            force_show_recursive(GTK_WIDGET(l->data));
+        g_list_free(children);
+    }
+}
+
+static void on_about_toggled(GtkToggleButton *btn, gpointer data)
+{
+    (void)data;
+    if (gtk_toggle_button_get_active(btn)) {
+        force_show_recursive(about_box);
+        gtk_button_set_label(GTK_BUTTON(btn), "Скрыть");
+    } else {
+        gtk_widget_hide(about_box);
+        gtk_button_set_label(GTK_BUTTON(btn), "ℹ О программе");
+    }
+}
+
+/* Содержимое блока «О программе» для ASM Workshop. */
+static GtkWidget* make_about_content(void)
+{
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_style_context_add_class(gtk_widget_get_style_context(outer), "aboutbox");
+    gtk_container_set_border_width(GTK_CONTAINER(outer), 16);
+
+    /* две колонки */
+    GtkWidget *cols = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 20);
+    gtk_box_pack_start(GTK_BOX(outer), cols, TRUE, TRUE, 0);
+
+    /* ── левая колонка: О ПРОГРАММЕ ── */
+    GtkWidget *lcol = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_box_pack_start(GTK_BOX(cols), lcol, TRUE, TRUE, 0);
+
+    GtkWidget *lhead = gtk_label_new("📌 О ПРОГРАММЕ");
+    gtk_widget_set_halign(lhead, GTK_ALIGN_START);
+    gtk_style_context_add_class(gtk_widget_get_style_context(lhead), "abouttitle");
+    gtk_box_pack_start(GTK_BOX(lcol), lhead, FALSE, FALSE, 0);
+
+    GtkWidget *lbody = gtk_label_new(
+        "ASM Workshop — минималистичный ассемблер/деасемблер x86.\n\n"
+        "Данная программа позволяет:\n"
+        "• Собирать NASM-код в машинные байты (ASM → HEX)\n"
+        "• Разбирать байты в инструкции (HEX → ASM)\n"
+        "• Смотреть разбор команды по полям (префикс, opcode, операнды, размер)\n"
+        "• Работать в режимах COM 16-bit (DOSBox), 16, 32 и 64 бита");
+    gtk_label_set_xalign(GTK_LABEL(lbody), 0.0);
+    gtk_label_set_yalign(GTK_LABEL(lbody), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(lbody), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(lbody), PANGO_WRAP_WORD_CHAR);
+    gtk_style_context_add_class(gtk_widget_get_style_context(lbody), "abouttext");
+    gtk_box_pack_start(GTK_BOX(lcol), lbody, FALSE, FALSE, 0);
+
+    /* ── разделитель ── */
+    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(sep), "aboutsep");
+    gtk_box_pack_start(GTK_BOX(cols), sep, FALSE, FALSE, 0);
+
+    /* ── правая колонка: КРАТКИЙ ГАЙД ── */
+    GtkWidget *rcol = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_box_pack_start(GTK_BOX(cols), rcol, TRUE, TRUE, 0);
+
+    GtkWidget *rhead = gtk_label_new("📖 КРАТКИЙ ГАЙД");
+    gtk_widget_set_halign(rhead, GTK_ALIGN_START);
+    gtk_style_context_add_class(gtk_widget_get_style_context(rhead), "abouttitle");
+    gtk_box_pack_start(GTK_BOX(rcol), rhead, FALSE, FALSE, 0);
+
+    GtkWidget *rbody = gtk_label_new(
+        "🔐 Ассемблирование (левая панель):\n"
+        "1. Введите ASM-код (например, mov ax, 1)\n"
+        "2. Нажмите «Собрать →»\n"
+        "3. Используйте «Копировать HEX», чтобы сохранить результат\n\n"
+        "🔓 Деассемблирование (правая панель):\n"
+        "1. Введите HEX-байты (например, B8 01 00)\n"
+        "2. Нажмите «← Разобрать»\n"
+        "3. Таблица ниже покажет разбор по полям\n\n"
+        "💡 Ctrl+Enter в поле ввода запускает сборку/разбор");
+    gtk_label_set_xalign(GTK_LABEL(rbody), 0.0);
+    gtk_label_set_yalign(GTK_LABEL(rbody), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(rbody), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(rbody), PANGO_WRAP_WORD_CHAR);
+    gtk_style_context_add_class(gtk_widget_get_style_context(rbody), "abouttext");
+    gtk_box_pack_start(GTK_BOX(rcol), rbody, FALSE, FALSE, 0);
+
+    /* ── плашка разработчика ── */
+    GtkWidget *dev = gtk_label_new(
+        "👨‍💻 Разработчик: Филиппов Владимир Евгеньевич | Группа: 25ПИнж(б)-1");
+    gtk_widget_set_halign(dev, GTK_ALIGN_CENTER);
+    gtk_style_context_add_class(gtk_widget_get_style_context(dev), "aboutdev");
+    gtk_box_pack_start(GTK_BOX(outer), dev, FALSE, FALSE, 0);
+
+    /* важно: не показывать при show_all окна */
+    gtk_widget_set_no_show_all(outer, TRUE);
+    gtk_widget_hide(outer);
+    return outer;
 }
 
 /* ─────────────── построение интерфейса ─────────────── */
@@ -318,10 +417,9 @@ static GtkWidget* make_textview(gboolean editable, gboolean mono_out)
     gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(sw), 150);
     gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(sw), GTK_SHADOW_NONE);
     gtk_container_add(GTK_CONTAINER(sw), tv);
-    return sw; /* возвращаем scrolled window; сам tv достанем ниже */
+    return sw;
 }
 
-/* хелпер: найти textview внутри scrolledwindow */
 static GtkWidget* tv_of(GtkWidget *sw)
 {
     return gtk_bin_get_child(GTK_BIN(sw));
@@ -337,114 +435,10 @@ static GtkWidget* small_btn(const char *label, const char *css_class,
     return b;
 }
 
-static GtkWidget* about_label(const char *text, const char *size,
-                              const char *color, const char *weight,
-                              gboolean center, int mt, int mb)
-{
-    GtkWidget *l = gtk_label_new(NULL);
-    GString *s = g_string_new("<span");
-    if (size)  g_string_append_printf(s, " size='%s'", size);
-    if (color) g_string_append_printf(s, " foreground='%s'", color);
-    if (weight) g_string_append_printf(s, " weight='%s'", weight);
-    char *esc = g_markup_escape_text(text, -1);
-    g_string_append_printf(s, ">%s</span>", esc);
-    g_free(esc);
-    gtk_label_set_markup(GTK_LABEL(l), s->str);
-    g_string_free(s, TRUE);
-    if (center) gtk_widget_set_halign(l, GTK_ALIGN_CENTER);
-    gtk_label_set_xalign(GTK_LABEL(l), center ? 0.5f : 0.0f);
-    gtk_label_set_line_wrap(GTK_LABEL(l), TRUE);
-    gtk_label_set_line_wrap_mode(GTK_LABEL(l), PANGO_WRAP_WORD_CHAR);
-    gtk_widget_set_margin_top(l, mt);
-    gtk_widget_set_margin_bottom(l, mb);
-    return l;
-}
-
-static GtkWidget* make_about_dialog(void);
-
-/* Показ модального диалога «О программе» (кнопка в шапке окна).
-   Блок по умолчанию закрыт: диалог создаётся только по нажатию. */
-static void on_about_clicked(GtkButton *btn, gpointer data)
-{
-    (void)btn; (void)data;
-    GtkWidget *dlg = make_about_dialog();
-    gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-}
-
-static GtkWidget* make_about_dialog(void)
-{
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        "ASM Workshop — О программе",
-        GTK_WINDOW(win), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "Закрыть", GTK_RESPONSE_CLOSE, NULL);
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 420, -1);
-
-    /* заголовок внутри диалога */
-    GtkWidget *head_lbl = about_label("О программе", "large", "#8e44ad",
-                                      "bold", TRUE, 6, 8);
-    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-    gtk_box_set_spacing(GTK_BOX(content), 2);
-    gtk_container_set_border_width(GTK_CONTAINER(content), 12);
-    gtk_box_pack_start(GTK_BOX(content), head_lbl, FALSE, FALSE, 0);
-
-    /* назначение */
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("Назначение:", "small", "#4a90d9", "bold", FALSE, 5, 3),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("Ассемблирование и деассемблирование x86-команд "
-                    "(NASM + objdump) с разбором машинного кода по полям: "
-                    "префиксы, opcode, модификаторы адресации, immediate.",
-                    "x-small", "#555555", NULL, FALSE, 0, 8),
-        FALSE, FALSE, 0);
-
-    /* как работать */
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("Как работать:", "small", "#4a90d9", "bold", FALSE, 5, 3),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("1️ Выберите режим: COM 16-bit (DOSBox) / 16 / 32 / 64",
-                    "x-small", "#555555", NULL, FALSE, 0, 3),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("2️ Введите ассемблерный код слева и нажмите «Собрать →»",
-                    "x-small", "#555555", NULL, FALSE, 0, 3),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("3️ Или введите HEX-байты справа и нажмите «← Разобрать»",
-                    "x-small", "#555555", NULL, FALSE, 0, 3),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("4️ Таблица «Разбор команды по полям» покажет строение машинного кода",
-                    "x-small", "#555555", NULL, FALSE, 0, 8),
-        FALSE, FALSE, 0);
-
-    /* разделитель */
-    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_widget_set_margin_top(sep, 5);
-    gtk_widget_set_margin_bottom(sep, 8);
-    gtk_box_pack_start(GTK_BOX(content), sep, FALSE, FALSE, 0);
-
-    /* разработчик */
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("Разработчик", "small", "#4a90d9", "bold", TRUE, 0, 5),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("Филиппов Владимир Евгеньевич", "x-small", "#333333", NULL, TRUE, 0, 0),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(content),
-        about_label("25ПИнж(б)-1", "xx-small", "#888888", NULL, TRUE, 0, 6),
-        FALSE, FALSE, 0);
-
-    return dlg;
-}
-
 int main(int argc, char **argv)
 {
     gtk_init(&argc, &argv);
 
-    /* глобальный CSS */
     GtkCssProvider *prov = gtk_css_provider_new();
     gtk_css_provider_load_from_data(prov, THEME_CSS, -1, NULL);
     gtk_style_context_add_provider_for_screen(
@@ -481,10 +475,15 @@ int main(int argc, char **argv)
     gtk_combo_box_set_active(GTK_COMBO_BOX(mode_combo), 0);
     gtk_box_pack_start(GTK_BOX(head), mode_combo, FALSE, FALSE, 0);
 
-    /* кнопка «О программе» — единственный способ открыть блок (по дефолту закрыт) */
-    GtkWidget *about_btn = small_btn("ℹ О программе", "flat",
-                                     G_CALLBACK(on_about_clicked), NULL);
+    /* Кнопка-переключатель «О программе» (блок по умолчанию закрыт) */
+    about_btn = gtk_toggle_button_new_with_label("ℹ О программе");
+    gtk_style_context_add_class(gtk_widget_get_style_context(about_btn), "abouttoggle");
+    g_signal_connect(about_btn, "toggled", G_CALLBACK(on_about_toggled), NULL);
     gtk_box_pack_end(GTK_BOX(head), about_btn, FALSE, FALSE, 0);
+
+    /* Раскрывающийся блок «О программе» — сразу под шапкой, скрыт */
+    about_box = make_about_content();
+    gtk_box_pack_start(GTK_BOX(root), about_box, FALSE, FALSE, 0);
 
     /* ── две колонки ── */
     GtkWidget *cols = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -520,7 +519,6 @@ int main(int argc, char **argv)
     gtk_widget_set_halign(asm_note, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(lcontent), asm_note, FALSE, FALSE, 0);
 
-    /* таблица разбора команды по полям */
     GtkWidget *lbd = make_breakdown_tree("РАЗБОР КОМАНДЫ ПО ПОЛЯМ", &lbd_store);
     gtk_box_pack_start(GTK_BOX(lcontent), lbd, TRUE, TRUE, 0);
 
@@ -554,14 +552,13 @@ int main(int argc, char **argv)
     gtk_widget_set_halign(hex_note, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(rcontent), hex_note, FALSE, FALSE, 0);
 
-    /* таблица разбора команды по полям */
     GtkWidget *rbd = make_breakdown_tree("РАЗБОР КОМАНДЫ ПО ПОЛЯМ", &rbd_store);
     gtk_box_pack_start(GTK_BOX(rcontent), rbd, TRUE, TRUE, 0);
 
     /* ── нижняя строка состояния ── */
     statusbar = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(statusbar),
-        "<span foreground='#5b7ba6'>nasm + objdump · введите команду (mov ax, 1) или байты (B8 01 00) · Ctrl+Enter = собрать · Ctrl+R = разбор по полям</span>");
+        "<span foreground='#5b7ba6'>nasm + objdump · введите команду (mov ax, 1) или байты (B8 01 00) · Ctrl+Enter = собрать</span>");
     GtkWidget *foot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(foot), 10);
     gtk_box_pack_start(GTK_BOX(foot), statusbar, TRUE, TRUE, 0);
@@ -569,16 +566,14 @@ int main(int argc, char **argv)
         small_btn("результат → поле HEX-ввода", "flat", G_CALLBACK(on_swap), NULL), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), foot, FALSE, FALSE, 0);
 
-    /* горячие клавиши Ctrl+Enter */
     g_signal_connect(asm_in, "key-press-event", G_CALLBACK(on_key_press), GINT_TO_POINTER(0));
     g_signal_connect(hex_in, "key-press-event", G_CALLBACK(on_key_press), GINT_TO_POINTER(1));
 
-    /* стартовые примеры */
     set_buf(asm_in, "mov ax, 0x4C00\nint 0x21");
     set_buf(hex_in, "B8 01 00 00 00");
 
     gtk_widget_show_all(win);
-    /* показать разбор полей для стартовых примеров */
+    /* show_all НЕ покажет about_box: у него no_show_all + hide */
     do_assemble();
     do_disassemble();
     gtk_main();

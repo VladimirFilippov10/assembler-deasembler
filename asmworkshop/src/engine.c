@@ -40,9 +40,40 @@ static const char *mode_name[]     = { "COM 16-bit (DOSBox)", "16-bit", "32-bit"
 static const char *mode_bits_num[] = { "16", "16", "32", "64" };
 
 /**
+ * Ищет утилиту по имени. Проверяет $PATH, затем стандартные места
+ * (включая macOS Homebrew: /opt/homebrew/bin, /usr/local/bin).
+ */
+static int find_tool(const char *name, char *out, size_t cap)
+{
+    const char *path = getenv("PATH");
+    if (path) {
+        char buf[4096];
+        g_strlcpy_compat(buf, path, sizeof buf);
+        char *p = buf;
+        while (p && *p) {
+            char *colon = strchr(p, ':');
+            if (colon) *colon = 0;
+            if (*p) {
+                snprintf(out, cap, "%s/%s", p, name);
+                if (access(out, X_OK) == 0) return 1;
+            }
+            if (!colon) break;
+            p = colon + 1;
+        }
+    }
+    const char *fallbacks[] = {
+        "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", NULL
+    };
+    for (int i = 0; fallbacks[i]; i++) {
+        snprintf(out, cap, "%s/%s", fallbacks[i], name);
+        if (access(out, X_OK) == 0) return 1;
+    }
+    g_strlcpy_compat(out, name, cap);
+    return 0;
+}
+
+/**
  * Обрезает ведущие и хвостовые пробелы строки на месте.
- *
- * @param s  строка (модифицируется)
  */
 static void trim(char *s)
 {
@@ -55,8 +86,6 @@ static void trim(char *s)
 
 /**
  * Создаёт TMPDIR, если его нет.
- *
- * @return  0 при успехе, -1 при ошибке mkdir/stat
  */
 static int ensure_tmpdir(void)
 {
@@ -67,10 +96,6 @@ static int ensure_tmpdir(void)
 
 /**
  * Безопасная копия строки с гарантированным нулём в конце.
- *
- * @param dst  приёмник
- * @param src  источник
- * @param cap  размер приёмника (включая нулевой байт)
  */
 static void g_strlcpy_compat(char *dst, const char *src, size_t cap)
 {
@@ -82,12 +107,6 @@ static void g_strlcpy_compat(char *dst, const char *src, size_t cap)
 
 /**
  * Запускает shell-команду, читает её stdout целиком.
- *
- * @param cmd        команда для /bin/sh
- * @param buf        буфер для stdout
- * @param cap        размер буфера
- * @param exitcode   сюда кладётся код выхода (может быть NULL)
- * @return           количество прочитанных байт или -1
  */
 static long run_capture(const char *cmd, char *buf, size_t cap, int *exitcode)
 {
@@ -106,10 +125,6 @@ static long run_capture(const char *cmd, char *buf, size_t cap, int *exitcode)
 
 /**
  * Разбирает два hex-символа в байт.
- *
- * @param s  указатель на 2 hex-символа
- * @param v  сюда кладётся результат (накапливается: *v = (*v << 4) | nibble)
- * @return   0 при успехе, -1 если хотя бы один символ не hex
  */
 static int hex_pair(const char *s, unsigned char *v)
 {
@@ -124,9 +139,6 @@ static int hex_pair(const char *s, unsigned char *v)
 
 /**
  * Проверяет, что строка — только метка ("name:").
- *
- * @param l  строка
- * @return   1 если это метка, 0 иначе
  */
 static int line_is_label_only(const char *l)
 {
@@ -144,10 +156,7 @@ static int line_is_label_only(const char *l)
 }
 
 /**
- * Проверяет, что строка начинается с директивы NASM (bits, section, db, ...).
- *
- * @param l  строка
- * @return   1 если директива, 0 иначе
+ * Проверяет, что строка начинается с директивы NASM.
  */
 static int line_is_directive(const char *l)
 {
@@ -166,11 +175,6 @@ static int line_is_directive(const char *l)
 
 /**
  * Если строка вида "метка: остаток" — копирует имя метки в nm.
- *
- * @param l      строка
- * @param nm     буфер для имени (без ':')
- * @param ncap   размер буфера
- * @return       1 если найдена метка-префикс, 0 иначе
  */
 static int line_label_prefix(const char *l, char *nm, size_t ncap)
 {
@@ -189,10 +193,6 @@ static int line_label_prefix(const char *l, char *nm, size_t ncap)
 
 /**
  * Копирует в out всё, что идёт после "метка:".
- *
- * @param l     строка с меткой
- * @param out   буфер для остатка
- * @param cap   размер буфера
  */
 static void line_after_label(const char *l, char *out, size_t cap)
 {
@@ -205,10 +205,6 @@ static void line_after_label(const char *l, char *out, size_t cap)
 
 /**
  * Копирует первое слово строки (мнемонику) в out, в нижнем регистре.
- *
- * @param line  строка
- * @param out   буфер
- * @param cap   размер буфера
  */
 static void first_word(const char *line, char *out, size_t cap)
 {
@@ -222,12 +218,7 @@ static void first_word(const char *line, char *out, size_t cap)
 }
 
 /**
- * Ищет слово word в line как отдельный токен (границами считаются
- * символы, не входящие в [A-Za-z0-9_.]).
- *
- * @param line  строка
- * @param word  искомое слово
- * @return      1 если найдено, 0 иначе
+ * Ищет слово word в line как отдельный токен.
  */
 static int has_word(const char *line, const char *word)
 {
@@ -245,10 +236,6 @@ static int has_word(const char *line, const char *word)
 
 /**
  * Проверяет, есть ли в тексте переход/вызов на объявленную метку.
- * Нужно, чтобы включить итеративную подстановку адресов в assemble_with_labels.
- *
- * @param text  исходник
- * @return      1 если есть ссылки на метки, 0 иначе
  */
 static int has_label_refs(const char *text)
 {
@@ -314,11 +301,6 @@ static int has_label_refs(const char *text)
 
 /**
  * Переводит байты в hex-строку через пробел.
- *
- * @param d    байты
- * @param n    длина
- * @param out  буфер (cap должен быть >= 3*n+1)
- * @param cap  размер буфера
  */
 static void bytes_to_hex(const unsigned char *d, size_t n, char *out, size_t cap)
 {
@@ -330,24 +312,18 @@ static void bytes_to_hex(const unsigned char *d, size_t n, char *out, size_t cap
 
 /**
  * Запускает NASM на готовом .asm файле и читает результат.
- *
- * @param src_path  путь к .asm
- * @param mode      режим (уже учтён в BITS/ORG исходника)
- * @param bytes     сюда кладутся байты
- * @param len       сюда кладётся длина
- * @param bytecap   размер буфера bytes
- * @param err       буфер для текста ошибки
- * @param errcap    размер err
- * @return          0 при успехе, -1 при ошибке
  */
 static int nasm_to_bytes(const char *src_path, Mode mode,
                          unsigned char *bytes, size_t *len, size_t bytecap,
                          char *err, size_t errcap)
 {
+    char nasm_path[512];
+    find_tool("nasm", nasm_path, sizeof nasm_path);
+
     char cmd[1024];
     (void)mode;
-    snprintf(cmd, sizeof cmd, "nasm -f bin -O0 -o %s/out.bin %s 2>%s/nasm.err",
-             TMPDIR, src_path, TMPDIR);
+    snprintf(cmd, sizeof cmd, "\"%s\" -f bin -O0 -o %s/out.bin %s 2>%s/nasm.err",
+             nasm_path, TMPDIR, src_path, TMPDIR);
     int rc = 0;
     char junk[512];
     run_capture(cmd, junk, sizeof junk, &rc);
@@ -377,11 +353,6 @@ static int nasm_to_bytes(const char *src_path, Mode mode,
 
 /**
  * Собирает полный исходник для NASM: BITS + (ORG) + SECTION .text + тело.
- *
- * @param user_text  код пользователя
- * @param mode       режим
- * @param src        буфер результата
- * @param cap        размер src
  */
 static void build_source(const char *user_text, Mode mode, char *src, size_t cap)
 {
@@ -392,17 +363,7 @@ static void build_source(const char *user_text, Mode mode, char *src, size_t cap
 }
 
 /**
- * Итеративно подставляет реальные адреса меток в код, пока размеры
- * инструкций не перестанут меняться (обычно 2-3 прохода).
- *
- * @param text      исходник с метками
- * @param mode      режим
- * @param bytes     результат
- * @param len       длина результата
- * @param bytecap   размер буфера bytes
- * @param err       буфер ошибки
- * @param errcap    размер err
- * @return          0 при успехе, -1 при ошибке NASM
+ * Итеративно подставляет реальные адреса меток в код.
  */
 static int assemble_with_labels(const char *text, Mode mode,
                                 unsigned char *bytes, size_t *len, size_t bytecap,
@@ -472,8 +433,6 @@ static int assemble_with_labels(const char *text, Mode mode,
                         } else p = after;
                     }
                 } else {
-                    /* dummy-адрес 0x109, чтобы NASM не падал на первом проходе
-                     * с "symbol not defined" — реальный адрес появится позже */
                     char *p = ln;
                     while ((p = strstr(p, lab_name[k])) != NULL) {
                         int before_ok = (p == ln) || !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
@@ -513,7 +472,6 @@ static int assemble_with_labels(const char *text, Mode mode,
                 continue;
             }
             if (line_is_directive(lines[i])) continue;
-            /* собираем префикс [0..i] и берём его длину как адрес следующей строки */
             static char pre[40000];
             size_t pp = 0;
             pp += (size_t)snprintf(pre + pp, sizeof pre - pp, "BITS %s\n", mode_bits[mode]);
@@ -558,14 +516,6 @@ static int assemble_with_labels(const char *text, Mode mode,
 
 /**
  * Собирает код пользователя в байты через NASM.
- *
- * @param src      исходник (одна строка или блок)
- * @param mode     режим (COM/16/32/64)
- * @param out_hex  hex-строка результата
- * @param hexcap   размер out_hex
- * @param out_msg  сообщение об успехе или ошибке
- * @param msgcap   размер out_msg
- * @return         0 при успехе, -1 при ошибке
  */
 int engine_assemble(const char *src, Mode mode,
                     char *out_hex, size_t hexcap,
@@ -620,13 +570,7 @@ int engine_assemble(const char *src, Mode mode,
 }
 
 /**
- * Разбирает hex-строку ("B8 01 00", "0xB8,0x01", "B8h 0100") в байты.
- *
- * @param hexstr  строка
- * @param bytes   буфер для результата
- * @param cap     размер буфера
- * @param len     сюда кладётся длина
- * @return        0 при успехе, -1 если ни одного байта не найдено
+ * Разбирает hex-строку в байты.
  */
 static int parse_hex(const char *hexstr, unsigned char *bytes, size_t cap, size_t *len)
 {
@@ -656,15 +600,7 @@ static int parse_hex(const char *hexstr, unsigned char *bytes, size_t cap, size_
 }
 
 /**
- * Разбирает одну строку objdump вида "  401115:  48 01 c3  add rbx,rax".
- *
- * @param ln      строка objdump
- * @param insn    сюда кладётся текст инструкции ("add rbx, rax")
- * @param cap     размер insn
- * @param opb     сюда кладутся байты кодирования
- * @param oplen   сюда кладётся число байт
- * @param opcap   размер opb
- * @return        0 при успехе, -1 если не удалось разобрать
+ * Разбирает одну строку objdump.
  */
 int parse_objdump_line(const char *ln, char *insn, size_t cap,
                        unsigned char *opb, size_t *oplen, size_t opcap)
@@ -711,33 +647,25 @@ int parse_objdump_line(const char *ln, char *insn, size_t cap,
 }
 
 /**
- * Разбирает raw-байты через ndisasm (входит в поставку NASM).
- * Основной fallback, когда objdump не умеет 16-бит или отсутствует.
- *
- * @param bytes   байты
- * @param len     длина
- * @param mode    режим (16/32/64)
- * @param insns   массив строк результата
- * @param sizes   массив длин инструкций
- * @param maxn    максимум строк
- * @param count   сюда кладётся число строк
- * @param err     буфер ошибки
- * @param errcap  размер err
- * @return        0 при успехе, -1 при ошибке
+ * Разбирает raw-байты через ndisasm.
  */
 static int ndisasm_disasm(const unsigned char *bytes, size_t len, Mode mode,
                           char (*insns)[256], int *sizes, int maxn, int *count,
                           char *err, size_t errcap)
 {
+    char nd_path[512];
+    find_tool("ndisasm", nd_path, sizeof nd_path);
+
     char path[64];
     snprintf(path, sizeof path, TMPDIR "/nd_%d.bin", (int)getpid());
     FILE *f = fopen(path, "wb");
     if (!f) { snprintf(err, errcap, "нет доступа к %s", TMPDIR); return -1; }
     fwrite(bytes, 1, len, f); fclose(f);
 
-    char cmd[512];
-    snprintf(cmd, sizeof cmd, "ndisasm -b %s -o 0 -u %s 2>/dev/null",
-             mode_bits[mode], path);
+    char cmd[1024];
+    /* -b16 слитно, без пробела, чтобы ndisasm не тупил на Mac */
+    snprintf(cmd, sizeof cmd, "\"%s\" -b%s -o0 -u \"%s\" 2>/dev/null",
+             nd_path, mode_bits[mode], path);
     static char buf[65536];
     int rc = 0;
     run_capture(cmd, buf, sizeof buf, &rc);
@@ -753,39 +681,39 @@ static int ndisasm_disasm(const unsigned char *bytes, size_t len, Mode mode,
         memcpy(line, p, ll); line[ll] = 0;
         p += ll + (e ? 1 : 0);
 
-        char *s = line;
-        while (*s == ' ' || *s == '\t') s++;
-        int off = 0;
-        while (isxdigit((unsigned char)*s) && off < 8) { s++; off++; }
-        if (off != 8) continue;
-        while (*s == ' ' || *s == '\t') s++;
-        unsigned char opb[32]; int opn = 0;
-        while (isxdigit((unsigned char)*s) && opn < 32) {
-            if (!isxdigit((unsigned char)s[1])) break;
-            char pair[3] = { s[0], s[1], 0 };
-            unsigned char v = 0;
-            if (hex_pair(pair, &v) != 0) break;
-            opb[opn++] = v; s += 2;
-        }
-        while (*s == ' ' || *s == '\t') s++;
-        if (!*s) continue;
+        unsigned int off_val = 0;
+        char hex_bytes[64] = "";
+        char insn_raw[256] = "";
+        
+        if (sscanf(line, "%x %63s %255[^\n]", &off_val, hex_bytes, insn_raw) < 3)
+            continue;
 
-        char insn[256]; size_t oi = 0; int lastsp = 1;
-        for (char *q = s; *q && oi < sizeof insn - 3; q++) {
+        int opn = 0;
+        size_t hlen = strlen(hex_bytes);
+        unsigned char opb[32];
+        for (size_t k = 0; k + 1 < hlen && opn < 32; k += 2) {
+            char pair[3] = { hex_bytes[k], hex_bytes[k+1], 0 };
+            unsigned char v = 0;
+            if (hex_pair(pair, &v) == 0) opb[opn++] = v;
+        }
+
+        char clean[256]; size_t oi = 0; int lastsp = 1;
+        for (char *q = insn_raw; *q && oi < sizeof clean - 3; q++) {
             char c = *q;
             if (c == '\t' || c == ' ') {
-                if (!lastsp && oi) insn[oi++] = ' ';
+                if (!lastsp && oi) clean[oi++] = ' ';
                 lastsp = 1;
             } else if (c == ',') {
-                insn[oi++] = ','; insn[oi++] = ' '; lastsp = 1;
+                clean[oi++] = ','; clean[oi++] = ' '; lastsp = 1;
             } else {
-                insn[oi++] = c; lastsp = 0;
+                clean[oi++] = c; lastsp = 0;
             }
         }
-        insn[oi] = 0;
-        while (oi && insn[oi-1] == ' ') insn[--oi] = 0;
-        if (insn[0]) {
-            g_strlcpy_compat(insns[n], insn, 256);
+        clean[oi] = 0;
+        while (oi && clean[oi-1] == ' ') clean[--oi] = 0;
+
+        if (clean[0]) {
+            g_strlcpy_compat(insns[n], clean, 256);
             sizes[n] = opn;
             n++;
         }
@@ -797,22 +725,19 @@ static int ndisasm_disasm(const unsigned char *bytes, size_t len, Mode mode,
 
 /**
  * Разбирает байты через objdump, при отказе — через ndisasm.
- *
- * @param bytes   байты
- * @param len     длина
- * @param mode    режим
- * @param insns   массив строк результата
- * @param sizes   массив длин инструкций
- * @param maxn    максимум строк
- * @param count   сюда кладётся число строк
- * @param err     буфер ошибки
- * @param errcap  размер err
- * @return        0 при успехе, -1 при ошибке
  */
 static int disasm_with_sizes(const unsigned char *bytes, size_t len, Mode mode,
                              char (*insns)[256], int *sizes, int maxn, int *count,
                              char *err, size_t errcap)
 {
+    /* Для 16-битных режимов сразу ndisasm (он точнее в 16-бит) */
+    if (mode == MODE_COM || mode == MODE_16) {
+        return ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap);
+    }
+
+    char obj_path[512];
+    find_tool("objdump", obj_path, sizeof obj_path);
+
     char path[64];
     snprintf(path, sizeof path, TMPDIR "/bd_%d.bin", (int)getpid());
     FILE *f = fopen(path, "wb");
@@ -820,33 +745,25 @@ static int disasm_with_sizes(const unsigned char *bytes, size_t len, Mode mode,
     fwrite(bytes, 1, len, f);
     fclose(f);
 
-    char cmd[512];
+    char cmd[1024];
     snprintf(cmd, sizeof cmd,
-             "objdump -D -b binary -m %s -M intel --insn-width=16 %s 2>/dev/null",
-             mode_arch[mode], path);
+             "\"%s\" -D -b binary -m %s -M intel --insn-width=16 \"%s\" 2>/dev/null",
+             obj_path, mode_arch[mode], path);
     static char buf[65536];
     int rc = 0;
     run_capture(cmd, buf, sizeof buf, &rc);
     unlink(path);
+    
     if (rc != 0) {
-        if (ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap) == 0)
-            return 0;
-        snprintf(err, errcap, "objdump не найден или ошибка (код %d)", rc);
-        return -1;
+        return ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap);
     }
     char *p = strstr(buf, "Disassembly of section");
     if (!p) {
-        if (ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap) == 0)
-            return 0;
-        snprintf(err, errcap, "objdump: нет секции кода");
-        return -1;
+        return ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap);
     }
     p = strchr(p, '\n');
     if (!p) {
-        if (ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap) == 0)
-            return 0;
-        snprintf(err, errcap, "формат objdump?");
-        return -1;
+        return ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap);
     }
     p++;
 
@@ -871,78 +788,13 @@ static int disasm_with_sizes(const unsigned char *bytes, size_t len, Mode mode,
     }
     *count = n;
     if (n == 0) {
-        if (ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap) == 0)
-            return 0;
-        snprintf(err, errcap, "Не удалось разобрать байты (objdump вернул пусто)");
-        return -1;
+        return ndisasm_disasm(bytes, len, mode, insns, sizes, maxn, count, err, errcap);
     }
     return 0;
 }
 
 /**
- * Оценивает качество разбора: считает долю "(bad)"/".byte" в выводе.
- *
- * @param bytes   байты
- * @param len     длина
- * @param mode    режим
- * @param bad     сюда кладётся число «плохих» строк
- * @return        число разобранных инструкций или -1
- */
-static int disasm_quality(const unsigned char *bytes, size_t len, Mode mode, int *bad)
-{
-    static char insns[64][256];
-    static int sizes[64];
-    int count = 0;
-    char err[256];
-    *bad = 0;
-    if (disasm_with_sizes(bytes, len, mode, insns, sizes, 64, &count, err, sizeof err) != 0)
-        return -1;
-    for (int i = 0; i < count; i++)
-        if (strstr(insns[i], ".byte") || strstr(insns[i], "(bad)") ||
-            strstr(insns[i], ".short")) (*bad)++;
-    return count;
-}
-
-/**
- * Если запрошен 16-бит режим, а он даёт мусор — пробует 32/64/16/COM
- * и возвращает режим с минимумом «плохих» строк.
- *
- * @param bytes  байты
- * @param len    длина
- * @param asked  запрошенный режим
- * @return       лучший режим из доступных
- */
-static Mode auto_dis_mode(const unsigned char *bytes, size_t len, Mode asked)
-{
-    if (asked != MODE_COM && asked != MODE_16) return asked;
-    int bad_asked = 999;
-    int n = disasm_quality(bytes, len, asked, &bad_asked);
-    if (n > 0 && bad_asked == 0) return asked;
-    const Mode order[] = { MODE_32, MODE_64, MODE_16, MODE_COM };
-    Mode best = asked;
-    int best_bad = bad_asked, best_n = n;
-    for (unsigned k = 0; k < sizeof order / sizeof order[0]; k++) {
-        int bad = 0;
-        int cnt = disasm_quality(bytes, len, order[k], &bad);
-        if (cnt <= 0) continue;
-        if (bad < best_bad || (bad == best_bad && cnt > best_n)) {
-            best_bad = bad; best_n = cnt; best = order[k];
-        }
-        if (bad == 0) break;
-    }
-    return best;
-}
-
-/**
- * Деассемблирует hex-строку в текст ASM (по одной инструкции на строку).
- *
- * @param hexstr   hex-байты
- * @param mode     режим
- * @param out_asm  буфер результата
- * @param asmcap   размер out_asm
- * @param out_msg  сообщение об успехе или ошибке
- * @param msgcap   размер out_msg
- * @return         0 при успехе, -1 при ошибке
+ * Деассемблирует hex-строку в текст ASM.
  */
 int engine_disassemble(const char *hexstr, Mode mode,
                        char *out_asm, size_t asmcap,
@@ -958,7 +810,8 @@ int engine_disassemble(const char *hexstr, Mode mode,
         snprintf(out_msg, msgcap, "Не нашёл ни одного байта в hex-строке");
         return -1;
     }
-    Mode used = auto_dis_mode(bytes, len, mode);
+    
+    Mode used = mode;
 
     static char insns[256][256];
     static int sizes[256];
@@ -1058,12 +911,7 @@ static const struct Exp EXPS[] = {
 };
 
 /**
- * Извлекает immediate-операнд (последний операнд, начинающийся
- * с цифры, 0x, $ или кавычки).
- *
- * @param ops  строка операндов
- * @param out  буфер результата
- * @param cap  размер out
+ * Извлекает immediate-операнд.
  */
 static void extract_imm(const char *ops, char *out, size_t cap)
 {
@@ -1093,10 +941,6 @@ static void extract_imm(const char *ops, char *out, size_t cap)
 
 /**
  * Разбивает строку инструкции на поля для таблицы разбора.
- *
- * @param line  инструкция ("rep stosb", "mov ax, 1", ...)
- * @param mode  режим (для поля bits)
- * @param f     сюда кладутся поля
  */
 void insn_split(const char *line, Mode mode, InsnFields *f)
 {
@@ -1159,9 +1003,6 @@ have_ops:
 
 /**
  * Возвращает строковое имя префикса по его коду.
- *
- * @param p  код префикса (0..3) или -1
- * @return   "rep"/"repe"/"repne"/"lock"/"-"
  */
 static const char *prefix_name(int p)
 {
@@ -1179,12 +1020,7 @@ static const char *prefix_name(int p)
 static char bd_pool[8192];
 
 /**
- * Разбирает многострочную таблицу (из engine_breakdown) на строки/колонки.
- * Строкой данных считается та, где >=5 символов '|'.
- *
- * @param table  текст таблицы
- * @param t      сюда кладутся строки и колонки
- * @return       число строк данных (0 если разбор не удался)
+ * Разбирает многострочную таблицу на строки/колонки.
  */
 int bd_parse(const char *table, BdTable *t)
 {
@@ -1230,16 +1066,6 @@ int bd_parse(const char *table, BdTable *t)
 
 /**
  * Строит текстовую таблицу разбора кода (для GUI/CLI).
- * Для asm-входа сначала вызывает NASM, для hex-входа — parse_hex.
- *
- * @param src    исходник asm или hex
- * @param mode   режим
- * @param is_hex 1 если src — hex-байты, 0 если asm
- * @param out    буфер результата
- * @param cap    размер out
- * @param msg    сообщение об успехе или ошибке
- * @param msgcap размер msg
- * @return       0 при успехе, -1 при ошибке
  */
 int engine_breakdown(const char *src, Mode mode, int is_hex,
                      char *out, size_t cap,
@@ -1271,7 +1097,7 @@ int engine_breakdown(const char *src, Mode mode, int is_hex,
     static int sizes[64];
     int count = 0;
     char err[512];
-    Mode used = auto_dis_mode(bytes, blen, mode);
+    Mode used = mode;
     if (disasm_with_sizes(bytes, blen, used, insns, sizes, 64, &count, err, sizeof err) != 0) {
         snprintf(msg, msgcap, "%s", err);
         return -1;
@@ -1302,10 +1128,6 @@ int engine_breakdown(const char *src, Mode mode, int is_hex,
 
 /**
  * Возвращает короткое русское пояснение к последней инструкции блока.
- *
- * @param line  текст блока (берётся последняя непустая строка)
- * @param out   буфер результата
- * @param cap   размер out
  */
 void explain_line(const char *line, char *out, size_t cap)
 {

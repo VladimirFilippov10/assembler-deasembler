@@ -31,6 +31,19 @@ static const char *THEME_CSS =
 "  font-family:'JetBrains Mono','Cascadia Code',monospace; font-size:13px; }"
 "treeview header button { background:#e0ecfb; color:#1e3a8a; font-weight:700;"
 "  border:1px solid #cfe0f5; padding:4px 8px; }"
-"treeview:selected { background:#2563eb; color:#ffffff; }";
+"treeview:selected { background:#2563eb; color:#ffffff; }"
+
+/* ── раскрывающийся блок «О программе» ── */
+".aboutbox { background:#ffffff; border-radius:14px; border:1px solid #cfe0f5;"
+"  box-shadow:0 2px 8px rgba(29,78,216,0.08); padding:14px 18px; }"
+".abouttitle { font-size:16px; font-weight:700; color:#DAA520; }"
+".abouttext  { font-size:13px; color:#0F2F55; line-height:1.4; }"
+".aboutdev   { font-size:12px; font-weight:700; color:#8B6914;"
+"  background:#FFF0D0; border-radius:8px; padding:8px 12px; }"
+".aboutsep   { background:#FFD700; min-width:1px; }"
+"button.abouttoggle { background:#dbeafe; color:#1e3a8a; border-radius:10px;"
+"  padding:6px 14px; font-weight:700; }"
+"button.abouttoggle:hover { background:#bfdbfe; }"
+"button.abouttoggle:checked { background:#2563eb; color:#ffffff; }";
 
 #endif

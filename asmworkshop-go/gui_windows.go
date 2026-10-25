@@ -1,6 +1,6 @@
 // gui_windows.go — ASM Workshop: бело-синий интерфейс (Go, Win32 API).
-// Две карточки «Ассемблирование» и «Деассемблирование», таблицы разбора по полям,
-// горячие клавиши Ctrl+Enter, кнопка «О программе».
+// Две карточки «Ассемблирование» и «Деасемблирование», таблицы разбора по полям,
+// горячие клавиши Ctrl+Enter, раскрывающийся блок «О программе» (по умолчанию скрыт).
 //go:build windows
 
 package main
@@ -16,31 +16,30 @@ import (
 
 // ─────────── палитра ───────────
 
-// hexColor конвертирует "#RRGGBB" в COLORREF (0x00BBGGRR).
 func hexColor(s string) win.COLORREF {
-s = strings.TrimPrefix(s, "#")
-var v uint32
-fmt.Sscanf(s, "%06x", &v)
-r, g, b := v>>16&0xFF, v>>8&0xFF, v&0xFF
-return win.COLORREF(b<<16 | g<<8 | r)
+	s = strings.TrimPrefix(s, "#")
+	var v uint32
+	fmt.Sscanf(s, "%06x", &v)
+	r, g, b := v>>16&0xFF, v>>8&0xFF, v&0xFF
+	return win.COLORREF(b<<16 | g<<8 | r)
 }
 
 const (
-clWinBg    = "#F4F8FD"
-clCard     = "#FFFFFF"
-clCardEdge = "#CFE0F5"
-clInputBg  = "#F8FBFF"
-clOutBg    = "#EEF5FF"
-clHeadBg   = "#E0ECFB"
-clText     = "#0F2F55"
-clAccent   = "#1D4ED8"
-clAccent2  = "#2563EB"
-clBtn      = "#DBEAFE"
-clBtnHover = "#BFDBFE"
-clMuted    = "#5B7BA6"
-clOk       = "#15803D"
-clErr      = "#B91C1C"
-clWhite    = "#FFFFFF"
+	clWinBg    = "#F4F8FD"
+	clCard     = "#FFFFFF"
+	clCardEdge = "#CFE0F5"
+	clInputBg  = "#F8FBFF"
+	clOutBg    = "#EEF5FF"
+	clHeadBg   = "#E0ECFB"
+	clText     = "#0F2F55"
+	clAccent   = "#1D4ED8"
+	clAccent2  = "#2563EB"
+	clBtn      = "#DBEAFE"
+	clBtnHover = "#BFDBFE"
+	clMuted    = "#5B7BA6"
+	clOk       = "#15803D"
+	clErr      = "#B91C1C"
+	clWhite    = "#FFFFFF"
 )
 
 var (
@@ -50,210 +49,217 @@ var (
 	getModule = kernel32.NewProc("GetModuleHandleW")
 )
 
-// обёртки над GDI/User32 (в пакете lxn/win этих функций нет)
 var (
-pCreateSolidBrush     = gdi32.NewProc("CreateSolidBrush")
-pCreatePen            = gdi32.NewProc("CreatePen")
-pCreateFontIndirectW  = gdi32.NewProc("CreateFontIndirectW")
-pRoundRect            = gdi32.NewProc("RoundRect")
-pSelectObject         = gdi32.NewProc("SelectObject")
-pDeleteObject         = gdi32.NewProc("DeleteObject")
-pSetBkMode            = gdi32.NewProc("SetBkMode")
-pSetTextColor         = gdi32.NewProc("SetTextColor")
-pSetBkColor           = gdi32.NewProc("SetBkColor")
-pGetStockObject       = gdi32.NewProc("GetStockObject")
-pCreateCompatibleDC   = gdi32.NewProc("CreateCompatibleDC")
-pCreateCompatibleBmp  = gdi32.NewProc("CreateCompatibleBitmap")
-pBitBlt               = gdi32.NewProc("BitBlt")
-pDeleteDC             = gdi32.NewProc("DeleteDC")
-pFillRect             = user32.NewProc("FillRect")
-pDrawTextW            = user32.NewProc("DrawTextW")
-pBeginPaint           = user32.NewProc("BeginPaint")
-pEndPaint             = user32.NewProc("EndPaint")
-pLoadCursorW          = user32.NewProc("LoadCursorW")
+	pCreateSolidBrush    = gdi32.NewProc("CreateSolidBrush")
+	pCreatePen           = gdi32.NewProc("CreatePen")
+	pCreateFontIndirectW = gdi32.NewProc("CreateFontIndirectW")
+	pRoundRect           = gdi32.NewProc("RoundRect")
+	pSelectObject        = gdi32.NewProc("SelectObject")
+	pDeleteObject        = gdi32.NewProc("DeleteObject")
+	pSetBkMode           = gdi32.NewProc("SetBkMode")
+	pSetTextColor        = gdi32.NewProc("SetTextColor")
+	pSetBkColor          = gdi32.NewProc("SetBkColor")
+	pGetStockObject      = gdi32.NewProc("GetStockObject")
+	pCreateCompatibleDC  = gdi32.NewProc("CreateCompatibleDC")
+	pCreateCompatibleBmp = gdi32.NewProc("CreateCompatibleBitmap")
+	pBitBlt              = gdi32.NewProc("BitBlt")
+	pDeleteDC            = gdi32.NewProc("DeleteDC")
+	pFillRect            = user32.NewProc("FillRect")
+	pDrawTextW           = user32.NewProc("DrawTextW")
+	pBeginPaint          = user32.NewProc("BeginPaint")
+	pEndPaint            = user32.NewProc("EndPaint")
+	pLoadCursorW         = user32.NewProc("LoadCursorW")
+	pMoveToEx            = gdi32.NewProc("MoveToEx")
+	pLineTo              = gdi32.NewProc("LineTo")
 )
 
 func createSolidBrush(c win.COLORREF) win.HBRUSH {
-h, _, _ := pCreateSolidBrush.Call(uintptr(c))
-return win.HBRUSH(h)
+	h, _, _ := pCreateSolidBrush.Call(uintptr(c))
+	return win.HBRUSH(h)
 }
 
 func createPen(style, w int32, c win.COLORREF) win.HPEN {
-h, _, _ := pCreatePen.Call(uintptr(style), uintptr(w), uintptr(c))
-return win.HPEN(h)
+	h, _, _ := pCreatePen.Call(uintptr(style), uintptr(w), uintptr(c))
+	return win.HPEN(h)
 }
 
 type logfont struct {
-LfHeight         int32
-LfWidth          int32
-LfEscapement     int32
-LfOrientation    int32
-LfWeight         uint32
-LfItalic         byte
-LfUnderline      byte
-LfStrikeOut      byte
-LfCharSet        byte
-LfOutPrecision   byte
-LfClipPrecision  byte
-LfQuality        byte
-LfPitchAndFamily byte
-LfFaceName       [32]uint16
+	LfHeight         int32
+	LfWidth          int32
+	LfEscapement     int32
+	LfOrientation    int32
+	LfWeight         uint32
+	LfItalic         byte
+	LfUnderline      byte
+	LfStrikeOut      byte
+	LfCharSet        byte
+	LfOutPrecision   byte
+	LfClipPrecision  byte
+	LfQuality        byte
+	LfPitchAndFamily byte
+	LfFaceName       [32]uint16
 }
 
 func createFontW(name string, height int32) win.HFONT {
-lf := logfont{LfHeight: height, LfWeight: win.FW_NORMAL,
-LfCharSet: win.DEFAULT_CHARSET, LfOutPrecision: win.OUT_TT_PRECIS,
-LfClipPrecision: win.CLIP_DEFAULT_PRECIS, LfQuality: win.ANTIALIASED_QUALITY,
-LfPitchAndFamily: 0x01 | win.FF_SWISS}
-copy(lf.LfFaceName[:], utf16PtrBytes(name))
-h, _, _ := pCreateFontIndirectW.Call(uintptr(unsafe.Pointer(&lf)))
-return win.HFONT(h)
+	lf := logfont{LfHeight: height, LfWeight: win.FW_NORMAL,
+		LfCharSet: win.DEFAULT_CHARSET, LfOutPrecision: win.OUT_TT_PRECIS,
+		LfClipPrecision: win.CLIP_DEFAULT_PRECIS, LfQuality: win.ANTIALIASED_QUALITY,
+		LfPitchAndFamily: 0x01 | win.FF_SWISS}
+	copy(lf.LfFaceName[:], utf16PtrBytes(name))
+	h, _, _ := pCreateFontIndirectW.Call(uintptr(unsafe.Pointer(&lf)))
+	return win.HFONT(h)
 }
 
 func utf16PtrBytes(s string) []uint16 {
-u, _ := syscall.UTF16FromString(s)
-return u
+	u, _ := syscall.UTF16FromString(s)
+	return u
 }
 
 func fillRect(hdc win.HDC, r *win.RECT, hbr win.HBRUSH) {
-pFillRect.Call(uintptr(hdc), uintptr(unsafe.Pointer(r)), uintptr(hbr))
+	pFillRect.Call(uintptr(hdc), uintptr(unsafe.Pointer(r)), uintptr(hbr))
 }
 
 func roundRectHdc(hdc win.HDC, x1, y1, x2, y2, w, h int32) {
-pRoundRect.Call(uintptr(hdc), uintptr(x1), uintptr(y1), uintptr(x2), uintptr(y2), uintptr(w), uintptr(h))
+	pRoundRect.Call(uintptr(hdc), uintptr(x1), uintptr(y1), uintptr(x2), uintptr(y2), uintptr(w), uintptr(h))
 }
 
 func selectObj(hdc win.HDC, obj win.HGDIOBJ) win.HGDIOBJ {
-r, _, _ := pSelectObject.Call(uintptr(hdc), uintptr(obj))
-return win.HGDIOBJ(r)
+	r, _, _ := pSelectObject.Call(uintptr(hdc), uintptr(obj))
+	return win.HGDIOBJ(r)
 }
 
 func deleteObj(obj win.HGDIOBJ) { pDeleteObject.Call(uintptr(obj)) }
 
 func setBkMode(hdc win.HDC, mode int32) int32 {
-r, _, _ := pSetBkMode.Call(uintptr(hdc), uintptr(mode))
-return int32(r)
+	r, _, _ := pSetBkMode.Call(uintptr(hdc), uintptr(mode))
+	return int32(r)
 }
 
 func setTextColor(hdc win.HDC, c win.COLORREF) win.COLORREF {
-r, _, _ := pSetTextColor.Call(uintptr(hdc), uintptr(c))
-return win.COLORREF(r)
+	r, _, _ := pSetTextColor.Call(uintptr(hdc), uintptr(c))
+	return win.COLORREF(r)
 }
 
 func setBkColor(hdc win.HDC, c win.COLORREF) win.COLORREF {
-r, _, _ := pSetBkColor.Call(uintptr(hdc), uintptr(c))
-return win.COLORREF(r)
+	r, _, _ := pSetBkColor.Call(uintptr(hdc), uintptr(c))
+	return win.COLORREF(r)
 }
 
 func getStockNullBrush() win.HBRUSH {
-r, _, _ := pGetStockObject.Call(uintptr(win.NULL_BRUSH))
-return win.HBRUSH(r)
+	r, _, _ := pGetStockObject.Call(uintptr(win.NULL_BRUSH))
+	return win.HBRUSH(r)
 }
 
 func drawTextW(hdc win.HDC, text string, rc *win.RECT, flags uint32) {
-p := utf16Ptr(text)
-pDrawTextW.Call(uintptr(hdc), uintptr(unsafe.Pointer(p)), ^uintptr(0),
-uintptr(unsafe.Pointer(rc)), uintptr(flags))
+	p := utf16Ptr(text)
+	pDrawTextW.Call(uintptr(hdc), uintptr(unsafe.Pointer(p)), ^uintptr(0),
+		uintptr(unsafe.Pointer(rc)), uintptr(flags))
 }
 
 func beginPaint(hwnd win.HWND, ps *win.PAINTSTRUCT) win.HDC {
-r, _, _ := pBeginPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(ps)))
-return win.HDC(r)
+	r, _, _ := pBeginPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(ps)))
+	return win.HDC(r)
 }
 
 func endPaint(hwnd win.HWND, ps *win.PAINTSTRUCT) {
-pEndPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(ps)))
+	pEndPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(ps)))
 }
 
 func loadCursorApp() win.HCURSOR {
-r, _, _ := pLoadCursorW.Call(0, uintptr(32512 /*IDI_APPLICATION*/))
-return win.HCURSOR(r)
+	r, _, _ := pLoadCursorW.Call(0, uintptr(32512))
+	return win.HCURSOR(r)
 }
 
 func createCompatibleDC(hdc win.HDC) win.HDC {
-r, _, _ := pCreateCompatibleDC.Call(uintptr(hdc))
-return win.HDC(r)
+	r, _, _ := pCreateCompatibleDC.Call(uintptr(hdc))
+	return win.HDC(r)
 }
 
 func createCompatibleBitmap(hdc win.HDC, w, h int32) win.HBITMAP {
-r, _, _ := pCreateCompatibleBmp.Call(uintptr(hdc), uintptr(w), uintptr(h))
-return win.HBITMAP(r)
+	r, _, _ := pCreateCompatibleBmp.Call(uintptr(hdc), uintptr(w), uintptr(h))
+	return win.HBITMAP(r)
 }
 
 func bitBlt(dst win.HDC, x, y, w, h int32, src win.HDC, sx, sy int32, rop uint32) {
-pBitBlt.Call(uintptr(dst), uintptr(x), uintptr(y), uintptr(w), uintptr(h),
-uintptr(src), uintptr(sx), uintptr(sy), uintptr(rop))
+	pBitBlt.Call(uintptr(dst), uintptr(x), uintptr(y), uintptr(w), uintptr(h),
+		uintptr(src), uintptr(sx), uintptr(sy), uintptr(rop))
 }
 
 func deleteDC(hdc win.HDC) { pDeleteDC.Call(uintptr(hdc)) }
 
+func lineTo(hdc win.HDC, x, y int32) {
+	pLineTo.Call(uintptr(hdc), uintptr(x), uintptr(y))
+}
+
+func moveTo(hdc win.HDC, x, y int32) {
+	pMoveToEx.Call(uintptr(hdc), uintptr(x), uintptr(y), 0)
+}
+
 // ─────────── идентификаторы элементов ───────────
 
 const (
-IDMode      uintptr = 100
-IDAsmIn     uintptr = 101
-IDAsmOut    uintptr = 102
-IDAsmNote   uintptr = 103
-IDHexIn     uintptr = 104
-IDHexOut    uintptr = 105
-IDHexNote   uintptr = 106
-IDLVLeft    uintptr = 107
-IDLVRight   uintptr = 108
-IDStatus    uintptr = 109
-BTNAssemble uintptr = 120
-BTNCopyHex  uintptr = 121
-BTNPasteAsm uintptr = 122
-BTNClearAsm uintptr = 123
-BTNDisasm   uintptr = 124
-BTNCopyAsm  uintptr = 125
-BTNPasteHex uintptr = 126
-BTNClearHex uintptr = 127
-BTNAbout    uintptr = 128
-BTNSwap     uintptr = 129
-BTNHide     uintptr = 130
+	IDMode      uintptr = 100
+	IDAsmIn     uintptr = 101
+	IDAsmOut    uintptr = 102
+	IDAsmNote   uintptr = 103
+	IDHexIn     uintptr = 104
+	IDHexOut    uintptr = 105
+	IDHexNote   uintptr = 106
+	IDLVLeft    uintptr = 107
+	IDLVRight   uintptr = 108
+	IDStatus    uintptr = 109
+	BTNAssemble uintptr = 120
+	BTNCopyHex  uintptr = 121
+	BTNPasteAsm uintptr = 122
+	BTNClearAsm uintptr = 123
+	BTNDisasm   uintptr = 124
+	BTNCopyAsm  uintptr = 125
+	BTNPasteHex uintptr = 126
+	BTNClearHex uintptr = 127
+	BTNAbout    uintptr = 128
+	BTNSwap     uintptr = 129
 )
 
 type ctl struct {
-hwnd win.HWND
-text string // для меток
-back win.COLORREF
-fg   win.COLORREF
+	hwnd win.HWND
+	text string
+	back win.COLORREF
+	fg   win.COLORREF
 }
 
 type cardArea struct {
-x, y, cx, cy int32
-title        string
+	x, y, cx, cy int32
+	title        string
 }
 
 var (
-mainWnd  win.HWND
-fontUI   win.HFONT
-fontMono win.HFONT
-fontBig  win.HFONT
+	mainWnd  win.HWND
+	fontUI   win.HFONT
+	fontMono win.HFONT
+	fontBig  win.HFONT
 
-modeBox   *ctl
-asmIn     *ctl
-asmOut    *ctl
-asmNote   *ctl
-hexIn     *ctl
-hexOut    *ctl
-hexNote   *ctl
-lvLeft    *ctl
-lvRight   *ctl
-statusLbl *ctl
+	modeBox   *ctl
+	asmIn     *ctl
+	asmOut    *ctl
+	asmNote   *ctl
+	hexIn     *ctl
+	hexOut    *ctl
+	hexNote   *ctl
+	lvLeft    *ctl
+	lvRight   *ctl
+	statusLbl *ctl
 
-statics []*ctl
-buttons []*ctl
-cards   []*cardArea
+	statics []*ctl
+	buttons []*ctl
+	cards   []*cardArea
 
-// Блок «О программе» по умолчанию закрыт: открывается только кнопкой
-// «О программе», закрывается кнопкой «Скрыть» внутри блока.
-aboutVisible bool
+	// Раскрывающийся блок «О программе».
+	// По умолчанию закрыт; открывается/закрывается кнопкой «О программе».
+	aboutVisible bool
+	aboutCard    *cardArea // область-подложка блока (рисуется в WM_PAINT)
 )
 
 func guiAvailable() bool { return true }
-
-// ─────────── утилиты UTF-16 ───────────
 
 func utf16Ptr(s string) *uint16 {
 	p, _ := syscall.UTF16PtrFromString(s)
@@ -270,8 +276,6 @@ func getText(c *ctl) string {
 	win.SendMessage(c.hwnd, win.WM_GETTEXT, uintptr(n+1), uintptr(unsafe.Pointer(&buf[0])))
 	return syscall.UTF16ToString(buf[:n])
 }
-
-// ─────────── создание элементов ───────────
 
 func mkStatic(parent win.HWND, x, y, w, h int32, text string, style uint32, fg win.COLORREF) *ctl {
 	hwnd := win.CreateWindowEx(0, utf16Ptr("STATIC"), utf16Ptr(text),
@@ -349,7 +353,6 @@ func relayout() {
 	colW := (W - margin*3) / 2
 	headH := int32(64)
 
-	// шапка: бренд слева, режим справа
 	modeX := W - colW/2 - 20
 	win.MoveWindow(modeBox.hwnd, modeX, 18, colW/2, 200, true)
 
@@ -357,22 +360,30 @@ func relayout() {
 	cardH := H - y - 44
 	left := cards[0]
 	right := cards[1]
-	about := cards[2]
-	aboutW := int32(240)
-	if W < 900 {
-		aboutW = 0
+
+	// Если блок «О программе» открыт — показываем его третьей колонкой,
+	// иначе две колонки на всю ширину.
+	aboutW := int32(0)
+	if aboutVisible {
+		aboutW = 340
+		if W < 1100 {
+			aboutW = 300
+		}
 	}
 	avail := W - margin*3 - aboutW
 	colW = avail / 2
 
 	setCard(left, margin, y, colW, cardH)
 	setCard(right, margin*2+colW, y, colW, cardH)
-	if aboutW > 0 {
-		setCard(about, margin*3+colW*2, y, W-margin*3-colW*2, cardH)
+	if aboutVisible && aboutCard != nil {
+		setCard(aboutCard, margin*3+colW*2, y, W-margin*3-colW*2, cardH)
+	} else if aboutCard != nil {
+		// спрятать область — нулевые размеры
+		setCard(aboutCard, 0, 0, 0, 0)
 	}
 	layoutCard(left, true)
 	layoutCard(right, false)
-	win.MoveWindow(statusLbl.hwnd, margin, H-32, W-2*margin-int32(aboutW)-160, 24, true)
+	win.MoveWindow(statusLbl.hwnd, margin, H-32, W-2*margin-160, 24, true)
 }
 
 func setCard(c *cardArea, x, y, w, h int32) {
@@ -423,7 +434,6 @@ func layoutCard(c *cardArea, left bool) {
 
 func move(hwnd win.HWND, x, y, w, h int32) { win.MoveWindow(hwnd, x, y, w, h, true) }
 
-
 var btnMap = map[uintptr]*ctl{}
 
 func btnByID(id uintptr) *ctl { return btnMap[id] }
@@ -472,7 +482,6 @@ func mkFont(name string, size int) win.HFONT {
 	return createFontW(name, -int32(size)*96/72)
 }
 
-
 func createChildren() {
 	// шапка
 	brand := mkStatic(mainWnd, margin, 10, 600, 24, "⌁ ASM WORKSHOP", 0, hexColor(clAccent))
@@ -486,11 +495,10 @@ func createChildren() {
 	}
 	win.SendMessage(modeBox.hwnd, win.CB_SETCURSEL, 0, 0)
 
-	// карточки
+	// карточки-подложки (только две; «О программе» — отдельная область)
 	cards = append(cards,
 		&cardArea{title: "АССЕМБЛИРОВАНИЕ   ASM → HEX"},
-		&cardArea{title: "ДЕАССЕМБЛИРОВАНИЕ   HEX → ASM"},
-		&cardArea{title: "О ПРОГРАММЕ"})
+		&cardArea{title: "ДЕАССЕМБЛИРОВАНИЕ   HEX → ASM"})
 
 	// левая колонка
 	asmIn = mkEdit(mainWnd, 0, 0, 0, 0, IDAsmIn, true, false, hexColor(clInputBg))
@@ -514,15 +522,20 @@ func createChildren() {
 	hexNote = mkStatic(mainWnd, 0, 0, 0, 0, "", win.SS_LEFT|win.SS_NOPREFIX, hexColor(clMuted))
 	lvRight = mkListview(mainWnd, 0, 0, 0, 0, IDLVRight)
 
+	// кнопки шапки/низа
 	buttons = append(buttons,
 		mkButton(mainWnd, 0, 0, 0, 0, "О программе", BTNAbout, false),
 		mkButton(mainWnd, 0, 0, 0, 0, "результат → поле HEX-ввода", BTNSwap, false))
+
+	// блок «О программе» — область подложки, содержимое рисуется в WM_PAINT.
+	// По умолчанию закрыт (aboutVisible = false), размеры нулевые.
+	aboutCard = &cardArea{title: ""}
+	setCard(aboutCard, 0, 0, 0, 0)
 
 	statusLbl = mkStatic(mainWnd, 0, 0, 0, 0,
 		"nasm + objdump · введите команду (mov ax, 1) или байты (B8 01 00) · Ctrl+Enter = собрать",
 		0, hexColor(clMuted))
 
-	// шрифты для всех дочерних окон
 	setFontsAll()
 
 	setText(asmIn, "mov ax, 0x4C00\nint 0x21")
@@ -534,7 +547,6 @@ func (c *ctl) setFont(f win.HFONT) {
 }
 
 func setFontsAll() {
-	// пройтись по всем дочерним окнам вручную: соберём список контролов
 	all := []*ctl{modeBox, asmIn, asmOut, asmNote, hexIn, hexOut, hexNote, lvLeft, lvRight, statusLbl}
 	all = append(all, buttons...)
 	all = append(all, statics...)
@@ -600,12 +612,16 @@ func wndProc(hWnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	case win.WM_SIZE:
 		relayout()
 		invalidateCards()
+		win.InvalidateRect(mainWnd, nil, true)
 		return 0
 
 	case win.WM_PAINT:
 		var ps win.PAINTSTRUCT
 		hdc := beginPaint(hWnd, &ps)
 		paintCards(hdc)
+		if aboutVisible && aboutCard != nil && aboutCard.cx > 0 {
+			paintAbout(hdc, aboutCard)
+		}
 		endPaint(hWnd, &ps)
 		return 0
 
@@ -640,7 +656,7 @@ func wndProc(hWnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 			setNote(hexNote, "", false)
 			clearLV(lvRight)
 		case BTNAbout:
-			showAbout()
+			toggleAbout()
 		case BTNSwap:
 			t := strings.ReplaceAll(getText(asmOut), "\r\n", " ")
 			if strings.TrimSpace(t) != "" {
@@ -651,10 +667,6 @@ func wndProc(hWnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 			if notify == win.CBN_SELCHANGE {
 				doAssemble()
 				doDisassemble()
-			}
-		case IDAsmIn, IDHexIn:
-			if notify == win.EN_CHANGE {
-				// без авто-сборки на каждое нажатие
 			}
 		}
 		return 0
@@ -677,6 +689,14 @@ func wndProc(hWnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		return 0
 	}
 	return win.DefWindowProc(hWnd, msg, wParam, lParam)
+}
+
+// ─────────── «О программе»: открыть/закрыть ───────────
+
+func toggleAbout() {
+	aboutVisible = !aboutVisible
+	relayout()
+	win.InvalidateRect(mainWnd, nil, true)
 }
 
 // ─────────── отрисовка карточек и кнопок ───────────
@@ -705,9 +725,94 @@ func paintCards(hdc win.HDC) {
 	}
 }
 
+// paintAbout — блок «О программе» по образцу WPF:
+// две колонки (О ПРОГРАММЕ / КРАТКИЙ ГАЙД), жёлтый разделитель,
+// нижняя плашка с разработчиком.
+func paintAbout(hdc win.HDC, c *cardArea) {
+	// фон и рамка карточки
+	rect := win.RECT{c.x, c.y, c.x + c.cx, c.y + c.cy}
+	brush := createSolidBrush(hexColor("#FFFDF5"))
+	fillRect(hdc, &rect, brush)
+	deleteObj(win.HGDIOBJ(brush))
+	pen := createPen(win.PS_SOLID, 1, hexColor("#FFD700"))
+	old := selectObj(hdc, win.HGDIOBJ(pen))
+	roundRectHdc(hdc, c.x, c.y, c.x+c.cx, c.y+c.cy, 18, 18)
+	selectObj(hdc, old)
+	deleteObj(win.HGDIOBJ(pen))
+
+	setBkMode(hdc, win.TRANSPARENT)
+	oldf := selectObj(hdc, win.HGDIOBJ(fontUI))
+	defer selectObj(hdc, oldf)
+
+	pad := int32(16)
+	colW := (c.cx - pad*3) / 2
+	col1X := c.x + pad
+	col2X := c.x + pad*2 + colW
+	topY := c.y + pad
+
+	// ── заголовки колонок ──
+	setTextColor(hdc, hexColor("#DAA520"))
+	r1 := win.RECT{col1X, topY, col1X + colW, topY + 22}
+	drawTextW(hdc, "📌 О ПРОГРАММЕ", &r1, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
+	r2 := win.RECT{col2X, topY, col2X + colW, topY + 22}
+	drawTextW(hdc, "📖 КРАТКИЙ ГАЙД", &r2, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
+
+	// ── разделитель ──
+	divX := c.x + pad + colW + pad/2
+	divPen := createPen(win.PS_SOLID, 1, hexColor("#FFD700"))
+	oldp := selectObj(hdc, win.HGDIOBJ(divPen))
+	moveTo(hdc, divX, topY)
+	lineTo(hdc, divX, c.y+c.cy-pad)
+	selectObj(hdc, oldp)
+	deleteObj(win.HGDIOBJ(divPen))
+
+	// ── левая колонка: назначение ──
+	setTextColor(hdc, hexColor(clText))
+	bodyTop := topY + 28
+	body := "CRC-32 (Cyclic Redundancy Check) — алгоритм вычисления " +
+		"контрольной суммы, используемый для проверки целостности данных.\r\n\r\n" +
+		"Данная программа позволяет:\r\n" +
+		"• Вычислять CRC-32 для любого текста\r\n" +
+		"• Наблюдать пошаговую работу регистра сдвига\r\n" +
+		"• Искать исходные данные по известному CRC-ключу"
+	rb := win.RECT{col1X, bodyTop, col1X + colW, c.y + c.cy - 60}
+	drawTextW(hdc, body, &rb, uint32(win.DT_LEFT|win.DT_WORDBREAK|win.DT_NOPREFIX))
+
+	// ── правая колонка: гайд ──
+	guide := "🔐 Шифрование (вкладка \"ШИФРОВАНИЕ\"):\r\n" +
+		"1. Введите текст в поле «Входные данные»\r\n" +
+		"2. Нажмите «ВЫЧИСЛИТЬ CRC-32» для быстрого расчета\r\n" +
+		"3. Нажмите «ПОШАГОВЫЙ РЕЖИМ» для детального просмотра\r\n" +
+		"4. Используйте «КОПИРОВАТЬ» чтобы сохранить результат\r\n\r\n" +
+		"🔓 Дешифрование (вкладка \"ДЕШИФРОВАНИЕ\"):\r\n" +
+		"1. Введите CRC-32 ключ (например, 0x8BD69E57)\r\n" +
+		"2. Нажмите «РАСШИФРОВАТЬ»\r\n" +
+		"3. Программа найдет данные в базе (если есть)\r\n\r\n" +
+		"💡 Результаты сохраняются в crc_database.txt"
+	rg := win.RECT{col2X, bodyTop, col2X + colW, c.y + c.cy - 60}
+	drawTextW(hdc, guide, &rg, uint32(win.DT_LEFT|win.DT_WORDBREAK|win.DT_NOPREFIX))
+
+	// ── нижняя плашка с разработчиком ──
+	devRect := win.RECT{c.x + pad, c.y + c.cy - 44, c.x + c.cx - pad, c.y + c.cy - 12}
+	devBrush := createSolidBrush(hexColor("#FFF0D0"))
+	fillRect(hdc, &devRect, devBrush)
+	deleteObj(win.HGDIOBJ(devBrush))
+	devPen := createPen(win.PS_SOLID, 1, hexColor("#FFD700"))
+	olddp := selectObj(hdc, win.HGDIOBJ(devPen))
+	roundRectHdc(hdc, devRect.Left, devRect.Top, devRect.Right, devRect.Bottom, 8, 8)
+	selectObj(hdc, olddp)
+	deleteObj(win.HGDIOBJ(devPen))
+
+	setTextColor(hdc, hexColor("#8B6914"))
+	drawTextW(hdc, "👨‍💻 Разработчик: Филиппов Владимир Евгеньевич | Группа: 25ПИнж(б)-1",
+		&devRect, uint32(win.DT_CENTER|win.DT_SINGLELINE|win.DT_VCENTER|win.DT_NOPREFIX))
+}
+
 func invalidateCards() {
 	for _, c := range cards {
-		win.InvalidateRect(mainWnd, &win.RECT{c.x, c.y, c.x + c.cx, c.y + c.cy}, true)
+		if c.cx > 0 {
+			win.InvalidateRect(mainWnd, &win.RECT{c.x, c.y, c.x + c.cx, c.y + c.cy}, true)
+		}
 	}
 }
 
@@ -890,15 +995,15 @@ func copyText(s string) {
 type pointer = unsafe.Pointer
 
 var (
-	kernel32GlobalAlloc = kernel32.NewProc("GlobalAlloc")
-	kernel32GlobalLock  = kernel32.NewProc("GlobalLock")
+	kernel32GlobalAlloc  = kernel32.NewProc("GlobalAlloc")
+	kernel32GlobalLock   = kernel32.NewProc("GlobalLock")
 	kernel32GlobalUnlock = kernel32.NewProc("GlobalUnlock")
-	isClipFmt        = user32.NewProc("IsClipboardFormatAvailable")
-	openClip         = user32.NewProc("OpenClipboard")
-	closeClip        = user32.NewProc("CloseClipboard")
-	getClipData      = user32.NewProc("GetClipboardData")
-	globalSize       = kernel32.NewProc("GlobalSize")
-	getKeyState      = user32.NewProc("GetKeyState")
+	isClipFmt            = user32.NewProc("IsClipboardFormatAvailable")
+	openClip             = user32.NewProc("OpenClipboard")
+	closeClip            = user32.NewProc("CloseClipboard")
+	getClipData          = user32.NewProc("GetClipboardData")
+	globalSize           = kernel32.NewProc("GlobalSize")
+	getKeyState          = user32.NewProc("GetKeyState")
 )
 
 func pasteText() (string, bool) {
@@ -922,31 +1027,4 @@ func pasteText() (string, bool) {
 	kernel32GlobalUnlock.Call(h)
 	s := syscall.UTF16ToString(buf)
 	return strings.ReplaceAll(s, "\r\n", "\n"), true
-}
-
-// ─────────── окно «О программе» ───────────
-
-func showAbout() {
-	go func() {
-		msgbox(`Назначение:
-Ассемблирование и деассемблирование x86-команд (NASM + objdump)
-с разбором машинного кода по полям: префиксы, opcode, операнды, immediate.
-
-Как работать:
-1. Выберите режим: COM 16-bit (DOSBox) / 16 / 32 / 64
-2. Введите ассемблерный код слева и нажмите «Собрать →»
-3. Или введите HEX-байты справа и нажмите «← Разобрать»
-4. Таблица «Разбор команды по полям» покажет строение машинного кода
-
-Разработчик: Филиппов Владимир Евгеньевич
-Группа: 25ПИнж(б)-1`, "ASM Workshop · О программе")
-	}()
-}
-
-func msgbox(text, title string) {
-	user32MessageBox := user32.NewProc("MessageBoxW")
-	user32MessageBox.Call(uintptr(mainWnd),
-		uintptr(unsafe.Pointer(utf16Ptr(text))),
-		uintptr(unsafe.Pointer(utf16Ptr(title))),
-		uintptr(win.MB_OK|win.MB_ICONINFORMATION))
 }
