@@ -236,6 +236,29 @@ func firstLine(s string) string {
 	return s
 }
 
+// looksBroken — эвристика: считать вывод деассемблера мусором.
+// Срабатывает, если пусто или половина строк — (bad)/.byte/.short.
+// Типичный случай: objdump -m i8086 не поддерживает 16-битные опкоды.
+func looksBroken(out string) bool {
+	if strings.TrimSpace(out) == "" {
+		return true
+	}
+	total, bad := 0, 0
+	for _, ln := range strings.Split(out, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		total++
+		if strings.Contains(ln, "(bad)") ||
+			strings.Contains(ln, ".byte") ||
+			strings.Contains(ln, ".short") {
+			bad++
+		}
+	}
+	return total == 0 || bad*2 >= total
+}
+
 // ─────────────────────────── деассемблирование ───────────────────────────
 
 // Disassemble: hex-строка ("B8 01 00") → список инструкций по одной на строку.
@@ -245,51 +268,39 @@ func Disassemble(hexstr string, m Mode) (asm string, res Result) {
 		return "", Result{Text: "Не нашёл ни одного байта в hex-строке", IsErr: true}
 	}
 
-	_, oerr := lookTool("objdump")
-	if oerr == nil {
-		out, rerr := objdumpDisasm(data, m)
-		if rerr.IsErr {
-			return "", rerr
-		}
-		lines := strings.Split(out, "\n")
-		count := len(lines)
-		expl := ExplainLine(lines[count-1])
-		txt := fmt.Sprintf("%s · режим %s", pluralInsns(count), modeName[m])
-		if expl != "" {
-			txt += "\n" + expl
-		}
-		return out, Result{Text: txt}
-	}
+	// Каскад движков: objdump → ndisasm → встроенный мини-движок.
+	var out, engine string
 
-	// objdump нет — пробуем ndisasm (обычно лежит рядом с nasm.exe в поставке NASM).
-	if _, ok := ndisasmPath(); ok {
-		out, _, r := ndisasmDisasm(data, m)
-		if !r.IsErr {
-			lines := strings.Split(out, "\n")
-			expl := ExplainLine(lines[len(lines)-1])
-			txt := fmt.Sprintf("%s · режим %s · ndisasm", pluralInsns(len(lines)), modeName[m])
-			if expl != "" {
-				txt += "\n" + expl
+	if haveTool("objdump") {
+		if o, r := objdumpDisasm(data, m); !r.IsErr && !looksBroken(o) {
+			out, engine = o, "objdump"
+		}
+	}
+	if out == "" {
+		if _, ok := ndisasmPath(); ok {
+			if o, _, r := ndisasmDisasm(data, m); !r.IsErr && !looksBroken(o) {
+				out, engine = o, "ndisasm"
 			}
-			return out, Result{Text: txt}
 		}
+	}
+	if out == "" {
+		var lines []string
+		for i := 0; i < len(data); {
+			s, n := miniDisasm(data[i:], m)
+			if n <= 0 {
+				lines = append(lines, fmt.Sprintf("db 0x%02X", data[i]))
+				n = 1
+			} else {
+				lines = append(lines, s)
+			}
+			i += n
+		}
+		out, engine = strings.Join(lines, "\n"), "встроенный мини-движок"
 	}
 
-	// Встроенный мини-деасемблер.
-	var lines []string
-	for i := 0; i < len(data); {
-		s, n := miniDisasm(data[i:], m)
-		if n <= 0 {
-			lines = append(lines, fmt.Sprintf("db 0x%02X ; разбор не удался", data[i]))
-			n = 1
-		} else {
-			lines = append(lines, s)
-		}
-		i += n
-	}
-	out := strings.Join(lines, "\n")
+	lines := strings.Split(out, "\n")
 	expl := ExplainLine(lines[len(lines)-1])
-	txt := fmt.Sprintf("%s · режим %s · встроенный мини-движок", pluralInsns(len(lines)), modeName[m])
+	txt := fmt.Sprintf("%s · режим %s · %s", pluralInsns(len(lines)), modeName[m], engine)
 	if expl != "" {
 		txt += "\n" + expl
 	}
@@ -483,34 +494,38 @@ func Breakdown(src string, m Mode, isHex bool) (table string, summary string, re
 		size int
 	}
 	var rows []row
+	var engine string
+
+	// objdump
 	if haveTool("objdump") {
-		out, r := objdumpDisasm(data, m)
-		if r.IsErr {
-			return "", "", r
-		}
-		// размеры возьмём из objdump повторно — распарсим исходный вывод
-		sizes := objdumpSizes(data, m)
-		lines := strings.Split(out, "\n")
-		for i, ln := range lines {
-			sz := -1
-			if i < len(sizes) {
-				sz = sizes[i]
-			}
-			rows = append(rows, row{ln, sz})
-		}
-	} else if _, ok := ndisasmPath(); ok {
-		out, sizes, r := ndisasmDisasm(data, m)
-		if !r.IsErr {
-			lines := strings.Split(out, "\n")
-			for i, ln := range lines {
+		if o, r := objdumpDisasm(data, m); !r.IsErr && !looksBroken(o) {
+			sizes := objdumpSizes(data, m)
+			for i, ln := range strings.Split(o, "\n") {
 				sz := -1
 				if i < len(sizes) {
 					sz = sizes[i]
 				}
 				rows = append(rows, row{ln, sz})
 			}
+			engine = "objdump"
 		}
 	}
+	// ndisasm
+	if rows == nil {
+		if _, ok := ndisasmPath(); ok {
+			if o, sizes, r := ndisasmDisasm(data, m); !r.IsErr && !looksBroken(o) {
+				for i, ln := range strings.Split(o, "\n") {
+					sz := -1
+					if i < len(sizes) {
+						sz = sizes[i]
+					}
+					rows = append(rows, row{ln, sz})
+				}
+				engine = "ndisasm"
+			}
+		}
+	}
+	// mini
 	if rows == nil {
 		for i := 0; i < len(data); {
 			s, n := miniDisasm(data[i:], m)
@@ -522,6 +537,7 @@ func Breakdown(src string, m Mode, isHex bool) (table string, summary string, re
 				i += n
 			}
 		}
+		engine = "встроенный мини-движок"
 	}
 
 	var b strings.Builder
@@ -552,7 +568,8 @@ func Breakdown(src string, m Mode, isHex bool) (table string, summary string, re
 			total += rw.size
 		}
 	}
-	summary = fmt.Sprintf("%s · режим %s · всего %d байт", pluralInsns(len(rows)), modeName[m], total)
+	summary = fmt.Sprintf("%s · режим %s · %s · всего %d байт",
+		pluralInsns(len(rows)), modeName[m], engine, total)
 	return b.String(), summary, Result{}
 }
 
