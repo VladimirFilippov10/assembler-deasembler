@@ -1,2 +1,3 @@
 asmworkshop-go/*.exe
 *.exe
+!asmworkshop-win64.zip
