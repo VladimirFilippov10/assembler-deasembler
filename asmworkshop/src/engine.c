@@ -23,6 +23,9 @@ static int disasm_with_sizes(const unsigned char *bytes, size_t len, Mode mode,
                              char (*insns)[256], int *sizes, int maxn, int *count,
                              char *err, size_t errcap);
 
+/* безопасная копия строки (определено ниже) */
+static void g_strlcpy_compat(char *dst, const char *src, size_t cap);
+
 static const char *mode_bits[]  = { "16", "16", "32", "64" };
 static const char *mode_arch[]  = { "i8086", "i8086", "i386", "i386:x86-64" };
 static const char *mode_name[]  = { "COM 16-bit (DOSBox)", "16-bit", "32-bit", "64-bit" };
