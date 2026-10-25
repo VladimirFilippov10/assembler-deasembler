@@ -210,6 +210,7 @@ BTNPasteHex uintptr = 126
 BTNClearHex uintptr = 127
 BTNAbout    uintptr = 128
 BTNSwap     uintptr = 129
+BTNHide     uintptr = 130
 )
 
 type ctl struct {
@@ -244,6 +245,10 @@ statusLbl *ctl
 statics []*ctl
 buttons []*ctl
 cards   []*cardArea
+
+// Блок «О программе» по умолчанию закрыт: открывается только кнопкой
+// «О программе», закрывается кнопкой «Скрыть» внутри блока.
+aboutVisible bool
 )
 
 func guiAvailable() bool { return true }
