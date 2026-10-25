@@ -1,3 +1,11 @@
 asmworkshop-go/*.exe
 *.exe
 !asmworkshop-win64.zip
+asmworkshop-go/asmworkshop-linux-*
+asmworkshop-go/asmworkshop-darwin-*
+asmworkshop/asmworkshop-gtk-*
+asmworkshop/asmworkshop-cli-*
+!dist/**
+dist/*
+!dist/**/
+!dist/README.txt
