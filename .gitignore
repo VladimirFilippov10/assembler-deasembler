@@ -1,2 +1,2 @@
-asmworkshop/asmworkshop
-asmworkshop/asmworkshop_cli
+asmworkshop-go/*.exe
+*.exe
