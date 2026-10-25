@@ -7,14 +7,42 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
+#include <process.h>
+#include <sys/stat.h>
+#include <windows.h>
+typedef struct { int dummy; } stat_win_stub;
+#define mkdir(a,b) _mkdir(a)
+#define unlink(p)  remove(p)
+static int win_stat(const char *p) { DWORD a = GetFileAttributesA(p); return a == INVALID_FILE_ATTRIBUTES ? -1 : 0; }
+#define stat(path, st) win_stat(path)
+#ifndef WEXITSTATUS
+#define WEXITSTATUS(st) (((st) >> 8) & 0xFF)
+#endif
+static const char *tmpdir_base(void)
+{
+    static char buf[MAX_PATH + 32];
+    char tmp[MAX_PATH];
+    if (GetTempPathA(sizeof tmp, tmp))
+        _snprintf(buf, sizeof buf, "%sasmworkshop", tmp);
+    else
+        strcpy(buf, "asmworkshop");
+    return buf;
+}
+#define TMPDIR tmpdir_base()
+#else
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
-
 #define TMPDIR "/tmp/asmworkshop"
+#endif
 
-static int nasm_to_bytes(const char *src_path, Mode mode __attribute__((unused)),
+
+static int nasm_to_bytes(const char *src_path, Mode mode,
                          unsigned char *bytes, size_t *len, size_t bytecap,
                          char *err, size_t errcap);
 
@@ -123,14 +151,21 @@ static int nasm_to_bytes(const char *src_path, Mode mode,
                          unsigned char *bytes, size_t *len, size_t bytecap,
                          char *err, size_t errcap)
 {
-    char cmd[1024];
+    (void)mode;
+    char cmd[1600];
+#ifdef _WIN32
+    snprintf(cmd, sizeof cmd, "nasm -f bin -O0 -o \"%s\\out.bin\" \"%s\" 2>\"%s\\nasm.err\"",
+             TMPDIR, src_path, TMPDIR);
+#else
     snprintf(cmd, sizeof cmd, "nasm -f bin -O0 -o %s/out.bin %s 2>%s/nasm.err",
              TMPDIR, src_path, TMPDIR);
+#endif
     int rc = 0;
     char junk[512];
     run_capture(cmd, junk, sizeof junk, &rc);
     if (rc != 0) {
-        FILE *f = fopen(TMPDIR "/nasm.err", "rb");
+        char errpath[512]; snprintf(errpath, sizeof errpath, "%s/nasm.err", TMPDIR);
+    FILE *f = fopen(errpath, "rb");
         if (f) { size_t k = fread(err, 1, errcap - 1, f); err[k] = 0; fclose(f); }
         else snprintf(err, errcap, "nasm завершился с кодом %d", rc);
         /* первая полезная строка ошибки */
@@ -139,7 +174,8 @@ static int nasm_to_bytes(const char *src_path, Mode mode,
         trim(err);
         return -1;
     }
-    FILE *f = fopen(TMPDIR "/out.bin", "rb");
+    char xpath[512]; snprintf(xpath, sizeof xpath, "%s/out.bin", TMPDIR);
+    FILE *f = fopen(xpath, "rb");
     if (!f) { snprintf(err, errcap, "нет файла результата"); return -1; }
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
@@ -207,8 +243,8 @@ static int assemble_with_labels(const char *text, Mode mode,
         }
     }
 
-    char path[64];
-    snprintf(path, sizeof path, TMPDIR "/in_%d.asm", (int)getpid());
+    char path[512];
+    snprintf(path, sizeof path, "%s/in_%d.asm", TMPDIR, (int)getpid());
 
     for (int pass = 0; pass < 6; pass++) {
         /* 1) собрать текст с подстановкой известных адресов меток */
@@ -309,8 +345,8 @@ static int assemble_with_labels(const char *text, Mode mode,
                 }
                 pp += (size_t)snprintf(pre + pp, sizeof pre - pp, "%s\n", ln);
             }
-            char ppre[64];
-            snprintf(ppre, sizeof ppre, TMPDIR "/pre_%d.asm", (int)getpid());
+            char ppre[512];
+            snprintf(ppre, sizeof ppre, "%s/pre_%d.asm", TMPDIR, (int)getpid());
             FILE *g = fopen(ppre, "wb"); fputs(pre, g); fclose(g);
             unsigned char tb[65536]; size_t tl = 0; char te[256];
             if (nasm_to_bytes(ppre, mode, tb, &tl, sizeof tb, te, sizeof te) == 0)
@@ -350,8 +386,8 @@ int engine_assemble(const char *src, Mode mode,
     } else {
         char full[40000];
         build_source(text, mode, full, sizeof full);
-        char path[64];
-        snprintf(path, sizeof path, TMPDIR "/in_%d.asm", (int)getpid());
+        char path[512];
+        snprintf(path, sizeof path, "%s/in_%d.asm", TMPDIR, (int)getpid());
         FILE *f = fopen(path, "wb");
         fputs(full, f); fclose(f);
         if (nasm_to_bytes(path, mode, bytes, &len, sizeof bytes, err, sizeof err) != 0) {
@@ -478,16 +514,22 @@ int engine_disassemble(const char *hexstr, Mode mode,
         snprintf(out_msg, msgcap, "Не нашёл ни одного байта в hex-строке");
         return -1;
     }
-    char path[64];
-    snprintf(path, sizeof path, TMPDIR "/dis_%d.bin", (int)getpid());
+    char path[512];
+    snprintf(path, sizeof path, "%s/dis_%d.bin", TMPDIR, (int)getpid());
     FILE *f = fopen(path, "wb");
     fwrite(bytes, 1, len, f);
     fclose(f);
 
-    char cmd[512];
+    char cmd[1600];
+#ifdef _WIN32
+    snprintf(cmd, sizeof cmd,
+             "objdump -D -b binary -m %s -M intel --adjust-vma=0x100 \"%s\" 2>nul",
+             mode_arch[mode], path);
+#else
     snprintf(cmd, sizeof cmd,
              "objdump -D -b binary -m %s -M intel --insn-width=16 %s 2>/dev/null",
              mode_arch[mode], path);
+#endif
     char buf[65536];
     int rc = 0;
     run_capture(cmd, buf, sizeof buf, &rc);
