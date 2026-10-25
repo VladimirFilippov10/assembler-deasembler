@@ -15,6 +15,9 @@ static GtkWidget *asm_in, *hex_in;      /* текстовые поля */
 static GtkWidget *asm_out, *hex_out;    /* результаты */
 static GtkWidget *asm_note, *hex_note;  /* пояснения */
 static GtkWidget *statusbar;
+static GtkWidget *about_card;           /* блок «О программе» */
+static GtkWidget *about_toggle_btn;     /* кнопка скрыть/показать в шапке */
+static GtkWidget *about_inner_btn;      /* кнопка свернуть содержимое внутри блока */
 
 /* ─────────────── стиль (палитра в theme.h) ─────────────── */
 
@@ -359,6 +362,29 @@ static GtkWidget* about_label(const char *text, const char *size,
     return l;
 }
 
+static GtkWidget* make_about_card(void);
+
+/* Переключить видимость содержимого карточки «О программе»
+   (данные — GtkBox с содержимым, сигнал подключён через swapped). */
+static void about_toggle_box_cb(GtkWidget *box)
+{
+    gboolean visible = gtk_widget_get_visible(box);
+    gtk_widget_set_visible(box, !visible);
+    if (about_inner_btn)
+        gtk_button_set_label(GTK_BUTTON(about_inner_btn),
+                             !visible ? "▲ Скрыть" : "▼ Показать");
+}
+
+/* Спрятать/показать весь блок «О программе» (кнопка в шапке окна). */
+static void on_about_toggle(GtkButton *btn, gpointer data)
+{
+    (void)data;
+    gboolean visible = gtk_widget_get_visible(about_card);
+    gtk_widget_set_visible(about_card, !visible);
+    gtk_button_set_label(GTK_BUTTON(btn), !visible ? "▲ О программе"
+                                                  : "▼ О программе");
+}
+
 static GtkWidget* make_about_card(void)
 {
     GtkWidget *outer = gtk_event_box_new();
@@ -427,6 +453,15 @@ static GtkWidget* make_about_card(void)
         about_label("25ПИнж(б)-1", "xx-small", "#888888", NULL, TRUE, 0, 0),
         FALSE, FALSE, 0);
 
+    /* кнопка скрыть/показать содержимое блока */
+    GtkWidget *hide_btn = gtk_button_new_with_label("▲ Скрыть");
+    gtk_style_context_add_class(gtk_widget_get_style_context(hide_btn), "flat");
+    g_signal_connect_swapped(hide_btn, "clicked",
+                             G_CALLBACK(about_toggle_box_cb), box);
+    about_inner_btn = hide_btn;
+    gtk_widget_set_margin_top(hide_btn, 6);
+    gtk_box_pack_start(GTK_BOX(box), hide_btn, FALSE, FALSE, 0);
+
     return outer;
 }
 
@@ -470,6 +505,11 @@ int main(int argc, char **argv)
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(mode_combo), "64-bit raw");
     gtk_combo_box_set_active(GTK_COMBO_BOX(mode_combo), 0);
     gtk_box_pack_start(GTK_BOX(head), mode_combo, FALSE, FALSE, 0);
+
+    /* кнопка скрыть/показать блок «О программе» */
+    about_toggle_btn = small_btn("▲ О программе", "flat",
+                                 G_CALLBACK(on_about_toggle), NULL);
+    gtk_box_pack_end(GTK_BOX(head), about_toggle_btn, FALSE, FALSE, 0);
 
     /* ── две колонки ── */
     GtkWidget *cols = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -543,7 +583,7 @@ int main(int argc, char **argv)
     GtkWidget *rbd = make_breakdown_tree("РАЗБОР КОМАНДЫ ПО ПОЛЯМ", &rbd_store);
     gtk_box_pack_start(GTK_BOX(rcontent), rbd, TRUE, TRUE, 0);
 
- GtkWidget *about_card = make_about_card();
+    about_card = make_about_card();
     gtk_widget_set_size_request(about_card, 260, -1);
     gtk_box_pack_start(GTK_BOX(cols), about_card, FALSE, FALSE, 0);
 
