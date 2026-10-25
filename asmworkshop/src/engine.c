@@ -95,20 +95,124 @@ static int line_is_directive(const char *l)
     return b[0] == '%' || b[0] == '#';
 }
 
-/* Есть ли в тексте метки-переходы (jmp/je/... на слово)? */
-static int has_jump(const char *text)
+/* Если строка имеет вид "метка <остаток>" (например "start: mov bx, 5"),
+ * возвращает 1 и копирует имя метки (без ':') в nm. */
+static int line_label_prefix(const char *l, char *nm, size_t ncap)
 {
-    static const char *ops[] = {"jmp","je","jne","jz","jnz","ja","jb","jae","jbe",
-                                "jc","jnc","jo","jno","js","jns","jp","jnp","jcxz",
-                                "jecxz","loop","loope","loopne","call", NULL};
-    const char *p = text;
-    while ((p = strchr(p, '\n')) != NULL) {
-        p++;
-        char w[16] = {0};
-        sscanf(p, "%15s", w);
-        for (int i = 0; w[i]; i++) w[i] = (char)tolower((unsigned char)w[i]);
-        for (int i = 0; ops[i]; i++)
-            if (strcmp(w, ops[i]) == 0) return 1;
+    const char *p = l;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || *p == '_' || *p == '.'))
+        return 0;
+    const char *s = p;
+    while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '.')) p++;
+    if (*p != ':') return 0;
+    size_t L = (size_t)(p - s);
+    if (L == 0 || L >= ncap) return 0;
+    memcpy(nm, s, L); nm[L] = 0;
+    return 1;
+}
+
+/* Остаток строки после "метка:" (без пробелов). */
+static void line_after_label(const char *l, char *out, size_t cap)
+{
+    const char *c = strchr(l, ':');
+    if (!c) { out[0] = 0; return; }
+    c++;
+    while (*c && isspace((unsigned char)*c)) c++;
+    g_strlcpy_compat(out, c, cap);
+}
+
+/* Первое слово строки (мнемоника), в нижнем регистре. Пустая строка -> "". */
+static void first_word(const char *line, char *out, size_t cap)
+{
+    out[0] = 0;
+    const char *p = line;
+    while (*p && isspace((unsigned char)*p)) p++;
+    size_t n = 0;
+    while (*p && !isspace((unsigned char)*p) && n + 1 < cap) out[n++] = *p++;
+    out[n] = 0;
+    for (size_t i = 0; out[i]; i++) out[i] = (char)tolower((unsigned char)out[i]);
+}
+
+/* Содержится ли слово word в строке line как отдельное слово? */
+static int has_word(const char *line, const char *word)
+{
+    size_t L = strlen(word);
+    const char *p = line;
+    while ((p = strstr(p, word)) != NULL) {
+        int before_ok = (p == line) || !(isalnum((unsigned char)p[-1]) || p[-1] == '_' || p[-1] == '.');
+        const char *after = p + L;
+        int after_ok = !(*after) || !(isalnum((unsigned char)*after) || *after == '_' || *after == '.');
+        if (before_ok && after_ok) return 1;
+        p = after;
+    }
+    return 0;
+}
+
+/* Есть ли в тексте метки, используемые как операнды переходов:
+ * "jmp start", "loop top", "call func" — даже если сама метка объявлена
+ * на той же строке ("start: jmp start"). Именно такие случаи раньше
+ * выдавали «symbol not defined» в GUI. */
+static int has_label_refs(const char *text)
+{
+    /* 1) собрать все имена меток: со строк "name:" и с префиксов "name: код" */
+    char names[128][64];
+    int nn = 0;
+    {
+        char tmp[32768];
+        strncpy(tmp, text, sizeof tmp - 1); tmp[sizeof tmp - 1] = 0;
+        char *s = tmp;
+        while (*s) {
+            char *e = strchr(s, '\n');
+            size_t l = e ? (size_t)(e - s) : strlen(s);
+            char ln[256];
+            if (l >= sizeof ln) l = sizeof ln - 1;
+            memcpy(ln, s, l); ln[l] = 0;
+            char nm[64];
+            int is_lab = line_is_label_only(ln) || line_label_prefix(ln, nm, sizeof nm);
+            if (is_lab) {
+                if (line_is_label_only(ln)) {
+                    size_t m = strlen(ln);
+                    if (m >= 1 && m - 1 < sizeof nm) {
+                        memcpy(nm, ln, m - 1); nm[m - 1] = 0; trim(nm);
+                    } else nm[0] = 0;
+                }
+                if (nm[0] && nn < 128) strcpy(names[nn++], nm);
+            }
+            if (!e) break;
+            s = e + 1;
+        }
+    }
+    if (nn == 0) return 0;
+    /* 2) есть ли переход/вызов, ссылающийся на любую из меток? */
+    static const char *br[] = {"jmp","je","jne","jz","jnz","ja","jb","jae","jbe",
+                               "jc","jnc","jo","jno","js","jns","jp","jnp","jcxz",
+                               "jecxz","loop","loope","loopne","call", NULL};
+    char tmp2[32768];
+    strncpy(tmp2, text, sizeof tmp2 - 1); tmp2[sizeof tmp2 - 1] = 0;
+    char *s = tmp2;
+    while (*s) {
+        char *e = strchr(s, '\n');
+        size_t l = e ? (size_t)(e - s) : strlen(s);
+        char ln[256];
+        if (l >= sizeof ln) l = sizeof ln - 1;
+        memcpy(ln, s, l); ln[l] = 0;
+        /* рассматриваем остаток после возможного префикса-метки */
+        char body[256];
+        char pfx[64];
+        if (line_is_label_only(ln)) { if (!e) break; s = e + 1; continue; }
+        if (line_label_prefix(ln, pfx, sizeof pfx)) line_after_label(ln, body, sizeof body);
+        else g_strlcpy_compat(body, ln, sizeof body);
+        char op[16];
+        first_word(body, op, sizeof op);
+        int is_branch = 0;
+        for (int i = 0; br[i]; i++)
+            if (strcmp(op, br[i]) == 0) { is_branch = 1; break; }
+        if (is_branch)
+            for (int k = 0; k < nn; k++)
+                if (has_word(body, names[k])) return 1;
+        if (!e) break;
+        s = e + 1;
     }
     return 0;
 }
@@ -179,13 +283,13 @@ static int assemble_with_labels(const char *text, Mode mode,
                                 char *err, size_t errcap)
 {
     /* Копия текста построчно */
-    static char lines[128][256];
+    static char lines[256][256];
     int nl = 0;
     {
         static char tmp[32768];
         strncpy(tmp, text, sizeof tmp - 1); tmp[sizeof tmp - 1] = 0;
         char *s = tmp;
-        while (*s && nl < 128) {
+        while (*s && nl < 256) {
             char *e = strchr(s, '\n');
             size_t l = e ? (size_t)(e - s) : strlen(s);
             if (l >= 256) l = 255;
@@ -346,7 +450,7 @@ int engine_assemble(const char *src, Mode mode,
     char err[512];
 
     int multi = strchr(text, '\n') != NULL;
-    int labels = has_jump(text);
+    int labels = has_label_refs(text);
 
     if (multi && labels) {
         if (assemble_with_labels(text, mode, bytes, &len, sizeof bytes, err, sizeof err) != 0) {
