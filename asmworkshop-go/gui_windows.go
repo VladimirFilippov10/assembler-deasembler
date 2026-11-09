@@ -725,16 +725,15 @@ func paintCards(hdc win.HDC) {
 	}
 }
 
-// paintAbout — блок «О программе» по образцу WPF:
+// paintAbout — блок «О программе» по образцу C-версии (make_about_content):
 // две колонки (О ПРОГРАММЕ / КРАТКИЙ ГАЙД), жёлтый разделитель,
-// нижняя плашка с разработчиком.
 func paintAbout(hdc win.HDC, c *cardArea) {
-	// фон и рамка карточки
+	// фон и рамка карточки (белая, как в GTK .aboutbox)
 	rect := win.RECT{c.x, c.y, c.x + c.cx, c.y + c.cy}
-	brush := createSolidBrush(hexColor("#FFFDF5"))
+	brush := createSolidBrush(hexColor(clCard))
 	fillRect(hdc, &rect, brush)
 	deleteObj(win.HGDIOBJ(brush))
-	pen := createPen(win.PS_SOLID, 1, hexColor("#FFD700"))
+	pen := createPen(win.PS_SOLID, 1, hexColor(clCardEdge))
 	old := selectObj(hdc, win.HGDIOBJ(pen))
 	roundRectHdc(hdc, c.x, c.y, c.x+c.cx, c.y+c.cy, 18, 18)
 	selectObj(hdc, old)
@@ -750,12 +749,12 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	col2X := c.x + pad*2 + colW
 	topY := c.y + pad
 
-	// ── заголовки колонок ──
+	// ── заголовки колонок (золотистые, как в GTK .abouttitle #DAA520) ──
 	setTextColor(hdc, hexColor("#DAA520"))
 	r1 := win.RECT{col1X, topY, col1X + colW, topY + 22}
-	drawTextW(hdc, "📌 О ПРОГРАММЕ", &r1, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
+	drawTextW(hdc, "О ПРОГРАММЕ", &r1, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
 	r2 := win.RECT{col2X, topY, col2X + colW, topY + 22}
-	drawTextW(hdc, "📖 КРАТКИЙ ГАЙД", &r2, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
+	drawTextW(hdc, "КРАТКИЙ ГАЙД", &r2, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
 
 	// ── разделитель ──
 	divX := c.x + pad + colW + pad/2
@@ -766,33 +765,32 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	selectObj(hdc, oldp)
 	deleteObj(win.HGDIOBJ(divPen))
 
-	// ── левая колонка: назначение ──
+	// ── левая колонка: назначение (дословно из gui.c) ──
 	setTextColor(hdc, hexColor(clText))
 	bodyTop := topY + 28
-	body := "CRC-32 (Cyclic Redundancy Check) — алгоритм вычисления " +
-		"контрольной суммы, используемый для проверки целостности данных.\r\n\r\n" +
+	body := "ASM Workshop — минималистичный ассемблер/деасемблер x86.\r\n\r\n" +
 		"Данная программа позволяет:\r\n" +
-		"• Вычислять CRC-32 для любого текста\r\n" +
-		"• Наблюдать пошаговую работу регистра сдвига\r\n" +
-		"• Искать исходные данные по известному CRC-ключу"
+		"• Собирать NASM-код в машинные байты (ASM → HEX)\r\n" +
+		"• Разбирать байты в инструкции (HEX → ASM)\r\n" +
+		"• Смотреть разбор команды по полям (префикс, opcode, операнды, размер)\r\n" +
+		"• Работать в режимах COM 16-bit (DOSBox), 16, 32 и 64 бита"
 	rb := win.RECT{col1X, bodyTop, col1X + colW, c.y + c.cy - 60}
 	drawTextW(hdc, body, &rb, uint32(win.DT_LEFT|win.DT_WORDBREAK|win.DT_NOPREFIX))
 
-	// ── правая колонка: гайд ──
-	guide := "🔐 Шифрование (вкладка \"ШИФРОВАНИЕ\"):\r\n" +
-		"1. Введите текст в поле «Входные данные»\r\n" +
-		"2. Нажмите «ВЫЧИСЛИТЬ CRC-32» для быстрого расчета\r\n" +
-		"3. Нажмите «ПОШАГОВЫЙ РЕЖИМ» для детального просмотра\r\n" +
-		"4. Используйте «КОПИРОВАТЬ» чтобы сохранить результат\r\n\r\n" +
-		"🔓 Дешифрование (вкладка \"ДЕШИФРОВАНИЕ\"):\r\n" +
-		"1. Введите CRC-32 ключ (например, 0x8BD69E57)\r\n" +
-		"2. Нажмите «РАСШИФРОВАТЬ»\r\n" +
-		"3. Программа найдет данные в базе (если есть)\r\n\r\n" +
-		"💡 Результаты сохраняются в crc_database.txt"
+	// ── правая колонка: гайд (дословно из gui.c) ──
+	guide := "🔐 Ассемблирование (левая панель):\r\n" +
+		"1. Введите ASM-код (например, mov ax, 1)\r\n" +
+		"2. Нажмите «Собрать →»\r\n" +
+		"3. Используйте «Копировать HEX», чтобы сохранить результат\r\n\r\n" +
+		"🔓 Деассемблирование (правая панель):\r\n" +
+		"1. Введите HEX-байты (например, B8 01 00)\r\n" +
+		"2. Нажмите «← Разобрать»\r\n" +
+		"3. Таблица ниже покажет разбор по полям\r\n\r\n" +
+		"💡 Ctrl+Enter в поле ввода запускает сборку/разбор"
 	rg := win.RECT{col2X, bodyTop, col2X + colW, c.y + c.cy - 60}
 	drawTextW(hdc, guide, &rg, uint32(win.DT_LEFT|win.DT_WORDBREAK|win.DT_NOPREFIX))
 
-	// ── нижняя плашка с разработчиком ──
+	// ── нижняя плашка разработчика (дословно из gui.c) ──
 	devRect := win.RECT{c.x + pad, c.y + c.cy - 44, c.x + c.cx - pad, c.y + c.cy - 12}
 	devBrush := createSolidBrush(hexColor("#FFF0D0"))
 	fillRect(hdc, &devRect, devBrush)
