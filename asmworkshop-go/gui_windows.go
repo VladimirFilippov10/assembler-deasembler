@@ -1,6 +1,4 @@
 // gui_windows.go — ASM Workshop: бело-синий интерфейс (Go, Win32 API).
-// Две карточки «Ассемблирование» и «Деасемблирование», таблицы разбора по полям,
-// горячие клавиши Ctrl+Enter, раскрывающийся блок «О программе» (по умолчанию скрыт).
 //go:build windows
 
 package main
@@ -367,7 +365,8 @@ func relayout() {
 		setCard(aboutCard, 0, 0, 0, 0)
 	}
 
-	cardH := H - y - 44
+	// Увеличили высоту под карточки, чтобы ничего не налезало
+	cardH := H - y - 60
 	left := cards[0]
 	right := cards[1]
 
@@ -379,7 +378,9 @@ func relayout() {
 
 	layoutCard(left, true)
 	layoutCard(right, false)
-	win.MoveWindow(statusLbl.hwnd, margin, H-32, W-2*margin-160, 24, true)
+	
+	// Статус-бар сдвинули чуть выше и сделали непрозрачным (SS_LEFT | WS_CLIPSIBLINGS)
+	win.MoveWindow(statusLbl.hwnd, margin, H-36, W-2*margin-160, 24, true)
 }
 
 func setCard(c *cardArea, x, y, w, h int32) {
@@ -521,13 +522,15 @@ func createChildren() {
 	aboutCard = &cardArea{title: ""}
 	setCard(aboutCard, 0, 0, 0, 0)
 
+	// ИСПРАВЛЕНИЕ 1: Добавили WS_CLIPSIBLINGS, чтобы текст внизу не наезжал на другие элементы
 	statusLbl = mkStatic(mainWnd, 0, 0, 0, 0,
 		"nasm + objdump · введите команду (mov ax, 1) или байты (B8 01 00) · Ctrl+Enter = собрать",
-		0, hexColor(clMuted))
+		win.SS_LEFT|win.SS_NOPREFIX|win.WS_CLIPSIBLINGS, hexColor(clMuted))
 
 	setFontsAll()
 
-	setText(asmIn, "mov ax, 0x4C00\nint 0x21")
+	// ИСПРАВЛЕНИЕ 2: Используем \r\n для переноса строки в Windows
+	setText(asmIn, "mov ax, 0x4C00\r\nint 0x21")
 	setText(hexIn, "B8 01 00 00 00")
 
 	setupEditSubclass(asmIn, &oldEditProcAsm)
@@ -761,7 +764,6 @@ func paintCards(hdc win.HDC) {
 	}
 }
 
-// paintAbout — блок «О программе» в стиле GTK-версии.
 // paintAbout — блок «О программе» в стиле GTK-версии.
 func paintAbout(hdc win.HDC, c *cardArea) {
 	// фон и рамка карточки
