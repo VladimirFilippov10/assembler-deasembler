@@ -122,15 +122,14 @@ func cliLoop() int {
 			continue
 		}
 		if dir == 1 {
-			_, r := Disassemble(line, mode)
-			if r.IsErr {
-				fmt.Println("ОШИБКА:", r.Text)
-				continue
-			}
 			if showTable {
 				runDis(line, mode)
 			} else {
-				a, _ := Disassemble(line, mode)
+				a, r := Disassemble(line, mode)
+				if r.IsErr {
+					fmt.Println("ОШИБКА:", r.Text)
+					continue
+				}
 				fmt.Println("ASM :\n" + a)
 			}
 		} else {

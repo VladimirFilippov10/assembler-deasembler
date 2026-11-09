@@ -44,7 +44,7 @@ func workDir() string {
 // затем в PATH (exec.LookPath на Windows сам добавит расширение .exe).
 func lookTool(name string) (string, error) {
 	if exeDir, err := os.Executable(); err == nil {
-		cand := filepath.Join(exeDir, name)
+		cand := filepath.Join(filepath.Dir(exeDir), name)
 		if _, serr := os.Stat(cand); serr == nil {
 			return cand, nil
 		}
@@ -611,7 +611,6 @@ func objdumpSizes(data []byte, m Mode) []int {
 // SplitInsn разбирает текст команды на поля.
 func SplitInsn(line string, m Mode) InsnFields {
 	f := InsnFields{Size: -1}
-	// отсечь комментарий
 	if c := strings.IndexByte(line, ';'); c >= 0 {
 		line = line[:c]
 	}
