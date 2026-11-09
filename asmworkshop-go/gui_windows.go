@@ -762,6 +762,7 @@ func paintCards(hdc win.HDC) {
 }
 
 // paintAbout — блок «О программе» в стиле GTK-версии.
+// paintAbout — блок «О программе» в стиле GTK-версии.
 func paintAbout(hdc win.HDC, c *cardArea) {
 	// фон и рамка карточки
 	rect := win.RECT{c.x, c.y, c.x + c.cx, c.y + c.cy}
@@ -787,9 +788,9 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	// ── заголовки колонок ──
 	setTextColor(hdc, hexColor("#DAA520"))
 	r1 := win.RECT{col1X, topY, col1X + colW, topY + 22}
-	drawTextW(hdc, "О ПРОГРАММЕ", &r1, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
+	drawTextW(hdc, "📌 О ПРОГРАММЕ", &r1, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
 	r2 := win.RECT{col2X, topY, col2X + colW, topY + 22}
-	drawTextW(hdc, "КРАТКИЙ ГАЙД", &r2, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
+	drawTextW(hdc, "📖 КРАТКИЙ ГАЙД", &r2, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
 
 	// ── разделитель ──
 	divX := c.x + pad + colW + pad/2
@@ -813,15 +814,15 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	drawTextW(hdc, body, &rb, uint32(win.DT_LEFT|win.DT_WORDBREAK|win.DT_NOPREFIX))
 
 	// ── правая колонка: гайд ──
-	guide := "Ассемблирование (левая панель):\r\n" +
+	guide := "🔐 Ассемблирование (левая панель):\r\n" +
 		"1. Введите ASM-код (например, mov ax, 1)\r\n" +
 		"2. Нажмите «Собрать →»\r\n" +
 		"3. Используйте «Копировать HEX», чтобы сохранить результат\r\n\r\n" +
-		"Деассемблирование (правая панель):\r\n" +
+		"🔓 Деассемблирование (правая панель):\r\n" +
 		"1. Введите HEX-байты (например, B8 01 00)\r\n" +
 		"2. Нажмите «← Разобрать»\r\n" +
 		"3. Таблица ниже покажет разбор по полям\r\n\r\n" +
-		"Ctrl+Enter в поле ввода запускает сборку/разбор"
+		"💡 Ctrl+Enter в поле ввода запускает сборку/разбор"
 	rg := win.RECT{col2X, bodyTop, col2X + colW, c.y + c.cy - 60}
 	drawTextW(hdc, guide, &rg, uint32(win.DT_LEFT|win.DT_WORDBREAK|win.DT_NOPREFIX))
 
@@ -837,7 +838,7 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	deleteObj(win.HGDIOBJ(devPen))
 
 	setTextColor(hdc, hexColor("#8B6914"))
-	drawTextW(hdc, "Разработчик: Филиппов Владимир Евгеньевич | Группа: 25ПИнж(б)-1",
+	drawTextW(hdc, "👨‍💻 Разработчик: Филиппов Владимир Евгеньевич | Группа: 25ПИнж(б)-1",
 		&devRect, uint32(win.DT_CENTER|win.DT_SINGLELINE|win.DT_VCENTER|win.DT_NOPREFIX))
 }
 
