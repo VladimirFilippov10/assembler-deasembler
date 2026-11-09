@@ -253,10 +253,11 @@ var (
 	buttons []*ctl
 	cards   []*cardArea
 
-	// Раскрывающийся блок «О программе».
-	// По умолчанию закрыт; открывается/закрывается кнопкой «О программе».
 	aboutVisible bool
-	aboutCard    *cardArea // область-подложка блока (рисуется в WM_PAINT)
+	aboutCard    *cardArea
+
+	oldEditProcAsm uintptr
+	oldEditProcHex uintptr
 )
 
 func guiAvailable() bool { return true }
@@ -350,37 +351,32 @@ func relayout() {
 	win.GetClientRect(mainWnd, &rc)
 	W, H := rc.Right, rc.Bottom
 
-	colW := (W - margin*3) / 2
 	headH := int32(64)
+	colW := (W - margin*3) / 2
 
 	modeX := W - colW/2 - 20
 	win.MoveWindow(modeBox.hwnd, modeX, 18, colW/2, 200, true)
 
 	y := headH
+	aboutH := int32(0)
+	if aboutVisible && aboutCard != nil {
+		aboutH = 210
+		setCard(aboutCard, margin, y, W-2*margin, aboutH)
+		y += aboutH + 8
+	} else if aboutCard != nil {
+		setCard(aboutCard, 0, 0, 0, 0)
+	}
+
 	cardH := H - y - 44
 	left := cards[0]
 	right := cards[1]
 
-	// Если блок «О программе» открыт — показываем его третьей колонкой,
-	// иначе две колонки на всю ширину.
-	aboutW := int32(0)
-	if aboutVisible {
-		aboutW = 340
-		if W < 1100 {
-			aboutW = 300
-		}
-	}
-	avail := W - margin*3 - aboutW
+	avail := W - margin*3
 	colW = avail / 2
 
 	setCard(left, margin, y, colW, cardH)
 	setCard(right, margin*2+colW, y, colW, cardH)
-	if aboutVisible && aboutCard != nil {
-		setCard(aboutCard, margin*3+colW*2, y, W-margin*3-colW*2, cardH)
-	} else if aboutCard != nil {
-		// спрятать область — нулевые размеры
-		setCard(aboutCard, 0, 0, 0, 0)
-	}
+
 	layoutCard(left, true)
 	layoutCard(right, false)
 	win.MoveWindow(statusLbl.hwnd, margin, H-32, W-2*margin-160, 24, true)
@@ -483,7 +479,6 @@ func mkFont(name string, size int) win.HFONT {
 }
 
 func createChildren() {
-	// шапка
 	brand := mkStatic(mainWnd, margin, 10, 600, 24, "⌁ ASM WORKSHOP", 0, hexColor(clAccent))
 	brand.setFont(fontBig)
 	sub := mkStatic(mainWnd, margin, 38, 600, 18, "ассемблер ⇄ деасемблер · NASM · Intel · DOSBox COM · Go", 0, hexColor(clMuted))
@@ -495,12 +490,10 @@ func createChildren() {
 	}
 	win.SendMessage(modeBox.hwnd, win.CB_SETCURSEL, 0, 0)
 
-	// карточки-подложки (только две; «О программе» — отдельная область)
 	cards = append(cards,
 		&cardArea{title: "АССЕМБЛИРОВАНИЕ   ASM → HEX"},
 		&cardArea{title: "ДЕАССЕМБЛИРОВАНИЕ   HEX → ASM"})
 
-	// левая колонка
 	asmIn = mkEdit(mainWnd, 0, 0, 0, 0, IDAsmIn, true, false, hexColor(clInputBg))
 	buttons = append(buttons,
 		mkButton(mainWnd, 0, 0, 0, 0, "Собрать →", BTNAssemble, true),
@@ -511,7 +504,6 @@ func createChildren() {
 	asmNote = mkStatic(mainWnd, 0, 0, 0, 0, "", win.SS_LEFT|win.SS_NOPREFIX, hexColor(clMuted))
 	lvLeft = mkListview(mainWnd, 0, 0, 0, 0, IDLVLeft)
 
-	// правая колонка
 	hexIn = mkEdit(mainWnd, 0, 0, 0, 0, IDHexIn, true, false, hexColor(clInputBg))
 	buttons = append(buttons,
 		mkButton(mainWnd, 0, 0, 0, 0, "← Разобрать", BTNDisasm, true),
@@ -522,13 +514,10 @@ func createChildren() {
 	hexNote = mkStatic(mainWnd, 0, 0, 0, 0, "", win.SS_LEFT|win.SS_NOPREFIX, hexColor(clMuted))
 	lvRight = mkListview(mainWnd, 0, 0, 0, 0, IDLVRight)
 
-	// кнопки шапки/низа
 	buttons = append(buttons,
 		mkButton(mainWnd, 0, 0, 0, 0, "О программе", BTNAbout, false),
 		mkButton(mainWnd, 0, 0, 0, 0, "результат → поле HEX-ввода", BTNSwap, false))
 
-	// блок «О программе» — область подложки, содержимое рисуется в WM_PAINT.
-	// По умолчанию закрыт (aboutVisible = false), размеры нулевые.
 	aboutCard = &cardArea{title: ""}
 	setCard(aboutCard, 0, 0, 0, 0)
 
@@ -540,6 +529,44 @@ func createChildren() {
 
 	setText(asmIn, "mov ax, 0x4C00\nint 0x21")
 	setText(hexIn, "B8 01 00 00 00")
+
+	setupEditSubclass(asmIn, &oldEditProcAsm)
+	setupEditSubclass(hexIn, &oldEditProcHex)
+}
+
+var (
+	pSetWindowLongPtr = user32.NewProc("SetWindowLongPtrW")
+	pCallWindowProc   = user32.NewProc("CallWindowProcW")
+)
+
+func setupEditSubclass(c *ctl, old *uintptr) {
+	cb := syscall.NewCallback(editSubclass)
+	r, _, _ := pSetWindowLongPtr.Call(uintptr(c.hwnd), ^uintptr(3) /*GWLP_WNDPROC*/, cb)
+	*old = r
+}
+
+func editSubclass(hWnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
+	if msg == win.WM_KEYDOWN {
+		ks, _, _ := getKeyState.Call(uintptr(win.VK_CONTROL))
+		if ks&0x8000 != 0 && (wParam == win.VK_RETURN || wParam == win.VK_ADD) {
+			switch hWnd {
+			case asmIn.hwnd:
+				doAssemble()
+				return 0
+			case hexIn.hwnd:
+				doDisassemble()
+				return 0
+			}
+		}
+	}
+	var old uintptr
+	if hWnd == asmIn.hwnd {
+		old = oldEditProcAsm
+	} else {
+		old = oldEditProcHex
+	}
+	r, _, _ := pCallWindowProc.Call(old, uintptr(hWnd), uintptr(msg), wParam, lParam)
+	return r
 }
 
 func (c *ctl) setFont(f win.HFONT) {
@@ -674,7 +701,7 @@ func wndProc(hWnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	case win.WM_KEYDOWN:
 		ks, _, _ := getKeyState.Call(uintptr(win.VK_CONTROL))
 		ctrl := ks&0x8000 != 0
-		if ctrl && (wParam == win.VK_RETURN || wParam == win.VK_ADD || wParam == 0x6D) {
+		if ctrl && (wParam == win.VK_RETURN || wParam == win.VK_ADD) {
 			focus := win.GetFocus()
 			if focus == asmIn.hwnd {
 				doAssemble()
@@ -695,6 +722,15 @@ func wndProc(hWnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 
 func toggleAbout() {
 	aboutVisible = !aboutVisible
+	b := btnByID(BTNAbout)
+	if b != nil {
+		if aboutVisible {
+			b.text = "Скрыть"
+		} else {
+			b.text = "О программе"
+		}
+		win.InvalidateRect(b.hwnd, nil, true)
+	}
 	relayout()
 	win.InvalidateRect(mainWnd, nil, true)
 }
@@ -725,10 +761,9 @@ func paintCards(hdc win.HDC) {
 	}
 }
 
-// paintAbout — блок «О программе» по образцу C-версии (make_about_content):
-// две колонки (О ПРОГРАММЕ / КРАТКИЙ ГАЙД), жёлтый разделитель,
+// paintAbout — блок «О программе» в стиле GTK-версии.
 func paintAbout(hdc win.HDC, c *cardArea) {
-	// фон и рамка карточки (белая, как в GTK .aboutbox)
+	// фон и рамка карточки
 	rect := win.RECT{c.x, c.y, c.x + c.cx, c.y + c.cy}
 	brush := createSolidBrush(hexColor(clCard))
 	fillRect(hdc, &rect, brush)
@@ -749,7 +784,7 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	col2X := c.x + pad*2 + colW
 	topY := c.y + pad
 
-	// ── заголовки колонок (золотистые, как в GTK .abouttitle #DAA520) ──
+	// ── заголовки колонок ──
 	setTextColor(hdc, hexColor("#DAA520"))
 	r1 := win.RECT{col1X, topY, col1X + colW, topY + 22}
 	drawTextW(hdc, "О ПРОГРАММЕ", &r1, uint32(win.DT_LEFT|win.DT_SINGLELINE|win.DT_VCENTER))
@@ -765,7 +800,7 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	selectObj(hdc, oldp)
 	deleteObj(win.HGDIOBJ(divPen))
 
-	// ── левая колонка: назначение (дословно из gui.c) ──
+	// ── левая колонка: назначение ──
 	setTextColor(hdc, hexColor(clText))
 	bodyTop := topY + 28
 	body := "ASM Workshop — минималистичный ассемблер/деасемблер x86.\r\n\r\n" +
@@ -777,20 +812,20 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	rb := win.RECT{col1X, bodyTop, col1X + colW, c.y + c.cy - 60}
 	drawTextW(hdc, body, &rb, uint32(win.DT_LEFT|win.DT_WORDBREAK|win.DT_NOPREFIX))
 
-	// ── правая колонка: гайд (дословно из gui.c) ──
-	guide := "🔐 Ассемблирование (левая панель):\r\n" +
+	// ── правая колонка: гайд ──
+	guide := "Ассемблирование (левая панель):\r\n" +
 		"1. Введите ASM-код (например, mov ax, 1)\r\n" +
 		"2. Нажмите «Собрать →»\r\n" +
 		"3. Используйте «Копировать HEX», чтобы сохранить результат\r\n\r\n" +
-		"🔓 Деассемблирование (правая панель):\r\n" +
+		"Деассемблирование (правая панель):\r\n" +
 		"1. Введите HEX-байты (например, B8 01 00)\r\n" +
 		"2. Нажмите «← Разобрать»\r\n" +
 		"3. Таблица ниже покажет разбор по полям\r\n\r\n" +
-		"💡 Ctrl+Enter в поле ввода запускает сборку/разбор"
+		"Ctrl+Enter в поле ввода запускает сборку/разбор"
 	rg := win.RECT{col2X, bodyTop, col2X + colW, c.y + c.cy - 60}
 	drawTextW(hdc, guide, &rg, uint32(win.DT_LEFT|win.DT_WORDBREAK|win.DT_NOPREFIX))
 
-	// ── нижняя плашка разработчика (дословно из gui.c) ──
+	// ── нижняя плашка с разработчиком ──
 	devRect := win.RECT{c.x + pad, c.y + c.cy - 44, c.x + c.cx - pad, c.y + c.cy - 12}
 	devBrush := createSolidBrush(hexColor("#FFF0D0"))
 	fillRect(hdc, &devRect, devBrush)
@@ -802,7 +837,7 @@ func paintAbout(hdc win.HDC, c *cardArea) {
 	deleteObj(win.HGDIOBJ(devPen))
 
 	setTextColor(hdc, hexColor("#8B6914"))
-	drawTextW(hdc, "👨‍💻 Разработчик: Филиппов Владимир Евгеньевич | Группа: 25ПИнж(б)-1",
+	drawTextW(hdc, "Разработчик: Филиппов Владимир Евгеньевич | Группа: 25ПИнж(б)-1",
 		&devRect, uint32(win.DT_CENTER|win.DT_SINGLELINE|win.DT_VCENTER|win.DT_NOPREFIX))
 }
 
@@ -812,10 +847,16 @@ func invalidateCards() {
 			win.InvalidateRect(mainWnd, &win.RECT{c.x, c.y, c.x + c.cx, c.y + c.cy}, true)
 		}
 	}
+	if aboutCard != nil && aboutCard.cx > 0 {
+		win.InvalidateRect(mainWnd, &win.RECT{aboutCard.x, aboutCard.y, aboutCard.x + aboutCard.cx, aboutCard.y + aboutCard.cy}, true)
+	}
 }
 
 func drawButton(di *win.DRAWITEMSTRUCT) {
 	c := btnByID(uintptr(di.CtlID))
+	if c == nil {
+		return
+	}
 	back := c.back
 	fg := c.fg
 	if di.ItemState&win.ODS_SELECTED != 0 {
@@ -973,15 +1014,15 @@ func fillLV(c *ctl, table string) {
 func copyText(s string) {
 	data := append(syscall.StringToUTF16(s), 0)
 	const CF_UNICODETEXT = 13
-	hmem, _, _ := kernel32GlobalAlloc.Call(2 /*GMEM_MOVEABLE*/, uintptr(len(data)*2))
+	hmem, _, _ := kernel32GlobalAlloc.Call(2, uintptr(len(data)*2))
 	if hmem == 0 {
 		return
 	}
 	p, _, _ := kernel32GlobalLock.Call(hmem)
-	copy(*(*[]uint16)(unsafe.Pointer(&struct {
-		p pointer
-		n int
-	}{pointer(p), len(data)})), data)
+	if p != 0 {
+		dst := unsafe.Slice((*uint16)(pointer(p)), len(data))
+		copy(dst, data)
+	}
 	kernel32GlobalUnlock.Call(hmem)
 	if win.OpenClipboard(mainWnd) {
 		win.EmptyClipboard()
